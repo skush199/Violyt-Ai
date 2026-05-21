@@ -39,9 +39,7 @@ frontend/.next/
 log/
 
 # Runtime storage and generated outputs
-storage/*
-!storage/Creatives/
-!storage/Creatives/**
+storage/
 vector_store/
 artifact_review/
 debug/
@@ -53,3 +51,19 @@ tmp*.json
 tmp_uvicorn_smoke.err.log
 tmp_uvicorn_smoke.out.log
 tmp_uvicorn_smoke.log
+
+# Local analysis and scratch artifacts
+*.analysis.json
+Jiraaf.json
+color_palette_analysis.json
+sample_validation_output.json
+Logo/
+
+# Generated docs/cache artifacts
+docs/content_format_guide.cache.json
+
+# Generated visual test artifacts
+tests/_logo_pipeline_output/
+tests/ai-final-render-logo-*/
+tests/scene-graph-image-led-*/
+tests/scene-graph-overlay-minimal-*/
