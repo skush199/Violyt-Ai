@@ -1,0 +1,93 @@
+services:
+  api:
+    image: violyt-backend:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://violyt:violyt@postgres:5432/violyt
+      ALEMBIC_DATABASE_URL: postgresql+psycopg://violyt:violyt@postgres:5432/violyt
+      OBJECT_STORAGE_BASE_PATH: /app/storage
+      VECTOR_STORE_BASE_PATH: /app/vector_store
+      GENERATION_TRACE_BASE_PATH: /app/storage/generation_traces
+      GENERATED_ASSETS_BASE_URL: http://localhost:8000/storage
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./storage:/app/storage
+      - ./vector_store:/app/vector_store
+    command: ["sh", "-c", "alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port 8000 --workers 2"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health').read()"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  worker:
+    image: violyt-backend:local
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://violyt:violyt@postgres:5432/violyt
+      ALEMBIC_DATABASE_URL: postgresql+psycopg://violyt:violyt@postgres:5432/violyt
+      OBJECT_STORAGE_BASE_PATH: /app/storage
+      VECTOR_STORE_BASE_PATH: /app/vector_store
+      GENERATION_TRACE_BASE_PATH: /app/storage/generation_traces
+      GENERATED_ASSETS_BASE_URL: http://localhost:8000/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    volumes:
+      - ./storage:/app/storage
+      - ./vector_store:/app/vector_store
+    command: ["python", "scripts/run_worker.py"]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_ENV: development
+        NEXT_PUBLIC_API_BASE_URI: http://localhost:8000
+        NEXT_PUBLIC_ENABLE_MOCK_UI: "false"
+        NEXT_PUBLIC_MOCK_ROLE: TENANT_ADMIN
+        NEXT_PUBLIC_DEMO_OWNER_EMAIL: ${NEXT_PUBLIC_DEMO_OWNER_EMAIL:-owner@violyt.ai}
+        NEXT_PUBLIC_DEMO_OWNER_PASSWORD: ${NEXT_PUBLIC_DEMO_OWNER_PASSWORD:-DemoPass123!}
+    environment:
+      NEXT_PUBLIC_ENV: development
+      NEXT_PUBLIC_API_BASE_URI: http://localhost:8000
+      NEXT_PUBLIC_ENABLE_MOCK_UI: "false"
+      NEXT_PUBLIC_MOCK_ROLE: TENANT_ADMIN
+      NEXT_PUBLIC_DEMO_OWNER_EMAIL: ${NEXT_PUBLIC_DEMO_OWNER_EMAIL:-owner@violyt.ai}
+      NEXT_PUBLIC_DEMO_OWNER_PASSWORD: ${NEXT_PUBLIC_DEMO_OWNER_PASSWORD:-DemoPass123!}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: violyt
+      POSTGRES_USER: violyt
+      POSTGRES_PASSWORD: violyt
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U violyt -d violyt"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  postgres_data:

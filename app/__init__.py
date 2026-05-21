@@ -1,0 +1,2 @@
+"""Violyt backend application package."""
+
