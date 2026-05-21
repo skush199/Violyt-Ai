@@ -86,6 +86,9 @@ class APILogger:
         self._write_log("STARTED NEW RUN")
         self._write_log("=" * 50)
 
+
+
+
     def finish(self):
         elapsed = time.time() - self.start_time if self.start_time else 0
         self._write_log("=" * 50)
