@@ -1,0 +1,55 @@
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+env_orig
+brandlove-*.json
+*service-account*.json
+*credentials*.json
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.claude/
+.codex_tmp/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+pytest-cache-files-*/
+.ruff_cache/
+*.egg-info/
+
+# Node / Next.js
+node_modules/
+frontend/node_modules/
+.pnpm-store/
+frontend/.next/
+
+# Logs
+*.log
+log/
+
+# Runtime storage and generated outputs
+storage/*
+!storage/Creatives/
+!storage/Creatives/**
+vector_store/
+artifact_review/
+debug/
+tmp/
+tmp*/
+
+# Local smoke/debug leftovers
+tmp*.json
+tmp_uvicorn_smoke.err.log
+tmp_uvicorn_smoke.out.log
+tmp_uvicorn_smoke.log
