@@ -78,6 +78,8 @@ class APILogger:
         with open(self.log_file, "a") as f:
             f.write(f"[{timestamp}] {message}\n")
 
+
+
     def start(self):
         self.start_time = time.time()
         self._write_log("=" * 50)
