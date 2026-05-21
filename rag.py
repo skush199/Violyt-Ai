@@ -155,8 +155,9 @@ def dict_merge(x: dict, y: dict) -> dict:
     return result
 
 # this is a simple list merge that concatenates lists and removes duplicates while preserving order
+
 def list_merge(x: list, y: list) -> list:
-    """Merge two lists (extend)."""
+    """Merge two lists (extend). here"""
     if x is None:
         return y if y else []
     if y is None:
