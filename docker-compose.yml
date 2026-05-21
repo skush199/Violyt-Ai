@@ -91,3 +91,4 @@ services:
 
 volumes:
   postgres_data:
+    name: violyt_postgres_data
