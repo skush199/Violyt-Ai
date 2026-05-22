@@ -1119,6 +1119,73 @@ async def test_renderer_scene_graph_repositions_logo_away_from_text_bounds() -> 
     root.rmdir()
 
 
+def test_renderer_scene_graph_anchor_places_logo_zone_near_frame_edge() -> None:
+    element = SceneGraphElement(
+        element_id="logo",
+        element_type="logo",
+        role="logo",
+        layer="brand",
+        geometry=SceneGraphGeometry(
+            width=0.2,
+            height=0.08,
+            units="normalized",
+            anchor="top-right",
+        ),
+    )
+
+    box = RendererService._scene_graph_box(element, 1080, 1080)
+
+    assert box == (877, 20, 1060, 101)
+
+
+def test_renderer_scene_graph_explicit_logo_box_snaps_to_20px_edge() -> None:
+    element = SceneGraphElement(
+        element_id="logo",
+        element_type="logo",
+        role="logo",
+        layer="brand",
+        geometry=SceneGraphGeometry(
+            x=0.08,
+            y=0.09,
+            width=0.2,
+            height=0.08,
+            units="normalized",
+            anchor="top-left",
+        ),
+    )
+
+    box = RendererService._scene_graph_box(element, 1024, 1536)
+
+    assert box == (20, 20, 194, 135)
+
+
+def test_renderer_logo_offset_in_zone_aligns_to_bottom_edge() -> None:
+    offset = RendererService._logo_offset_in_zone(
+        canvas_width=1080,
+        canvas_height=1080,
+        zone_x=800,
+        zone_y=900,
+        zone_width=200,
+        zone_height=100,
+        logo_width=120,
+        logo_height=40,
+    )
+
+    assert offset == (880, 960)
+
+
+def test_renderer_trim_logo_margins_crops_opaque_logo_canvas_to_visible_mark() -> None:
+    logo = Image.new("RGBA", (1536, 1024), (250, 250, 250, 255))
+    draw = ImageDraw.Draw(logo)
+    draw.rectangle((292, 324, 420, 615), fill=(247, 153, 0, 255))
+    draw.rectangle((460, 324, 1292, 615), fill=(0, 57, 117, 255))
+
+    trimmed = RendererService._trim_transparent_logo_margins(logo)
+
+    assert trimmed.size == (1001, 292)
+    assert trimmed.getchannel("A").getbbox() == (0, 0, 1001, 292)
+
+
 @pytest.mark.asyncio
 async def test_renderer_scene_graph_carousel_uses_paginated_render_path() -> None:
     renderer = RendererService(session=None)  # type: ignore[arg-type]

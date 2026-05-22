@@ -97,6 +97,19 @@ async def update_tenant(
     return TenantSummaryResponse.model_validate(summary)
 
 
+@router.delete(
+    "/{tenant_id}",
+    response_model=MessageResponse,
+    dependencies=[Depends(require_roles(RoleCode.SUPER_ADMIN))],
+)
+async def delete_tenant(
+    tenant_id: UUID,
+    session: AsyncSession = Depends(get_db_session),
+) -> MessageResponse:
+    await TenantService(session).delete_tenant(tenant_id)
+    return MessageResponse(message="Tenant deleted")
+
+
 @router.get("/{tenant_id}/users", response_model=list[TenantUserResponse])
 async def list_users(
     tenant_id: UUID,
