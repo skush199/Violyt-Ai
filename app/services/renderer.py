@@ -785,6 +785,139 @@ class RendererService:
         ]
         return (len(light_edges) / len(opaque_edges)) >= 0.75
 
+    @staticmethod
+    def _median_edge_color(image: Image.Image) -> tuple[int, int, int] | None:
+        rgba = image.convert("RGBA")
+        width, height = rgba.size
+        if width <= 0 or height <= 0:
+            return None
+        pixels = rgba.load()
+        edge_pixels: list[tuple[int, int, int, int]] = []
+        for x in range(width):
+            edge_pixels.append(pixels[x, 0])
+            edge_pixels.append(pixels[x, height - 1])
+        for y in range(1, max(height - 1, 1)):
+            edge_pixels.append(pixels[0, y])
+            edge_pixels.append(pixels[width - 1, y])
+        opaque_edges = [pixel for pixel in edge_pixels if pixel[3] > 220]
+        if not opaque_edges:
+            return None
+        return (
+            sorted(pixel[0] for pixel in opaque_edges)[len(opaque_edges) // 2],
+            sorted(pixel[1] for pixel in opaque_edges)[len(opaque_edges) // 2],
+            sorted(pixel[2] for pixel in opaque_edges)[len(opaque_edges) // 2],
+        )
+
+    @staticmethod
+    def _logo_pixel_is_mark(
+        pixel: tuple[int, int, int, int],
+        matte: tuple[int, int, int],
+    ) -> bool:
+        red, green, blue, alpha = pixel
+        if alpha <= 24:
+            return False
+        distance = max(abs(red - matte[0]), abs(green - matte[1]), abs(blue - matte[2]))
+        chroma = max(red, green, blue) - min(red, green, blue)
+        return distance >= 50 or (distance >= 32 and chroma >= 26)
+
+    @staticmethod
+    def _logo_pixel_is_high_signal_mark(pixel: tuple[int, int, int, int]) -> bool:
+        red, green, blue, alpha = pixel
+        if alpha <= 24:
+            return False
+        chroma = max(red, green, blue) - min(red, green, blue)
+        luminance = (0.2126 * red) + (0.7152 * green) + (0.0722 * blue)
+        return (chroma >= 32 and luminance <= 248) or luminance <= 120
+
+    @classmethod
+    def _visual_logo_mark_bbox(
+        cls,
+        image: Image.Image,
+        matte: tuple[int, int, int],
+    ) -> tuple[int, int, int, int] | None:
+        rgba = image.convert("RGBA")
+        pixels = rgba.load()
+        left = rgba.width
+        top = rgba.height
+        right = 0
+        bottom = 0
+        for y in range(rgba.height):
+            for x in range(rgba.width):
+                if not cls._logo_pixel_is_mark(pixels[x, y], matte):
+                    continue
+                left = min(left, x)
+                top = min(top, y)
+                right = max(right, x + 1)
+                bottom = max(bottom, y + 1)
+        if right <= left or bottom <= top:
+            return None
+        return (left, top, right, bottom)
+
+    @classmethod
+    def _visual_logo_high_signal_bbox(cls, image: Image.Image) -> tuple[int, int, int, int] | None:
+        rgba = image.convert("RGBA")
+        pixels = rgba.load()
+        left = rgba.width
+        top = rgba.height
+        right = 0
+        bottom = 0
+        for y in range(rgba.height):
+            for x in range(rgba.width):
+                if not cls._logo_pixel_is_high_signal_mark(pixels[x, y]):
+                    continue
+                left = min(left, x)
+                top = min(top, y)
+                right = max(right, x + 1)
+                bottom = max(bottom, y + 1)
+        if right <= left or bottom <= top:
+            return None
+        return (left, top, right, bottom)
+
+    @classmethod
+    def _remove_logo_matte_pixels(
+        cls,
+        image: Image.Image,
+        matte: tuple[int, int, int],
+    ) -> Image.Image:
+        cleaned = image.convert("RGBA").copy()
+        pixels = cleaned.load()
+        for y in range(cleaned.height):
+            for x in range(cleaned.width):
+                if cls._logo_pixel_is_mark(pixels[x, y], matte):
+                    continue
+                red, green, blue, _alpha = pixels[x, y]
+                pixels[x, y] = (red, green, blue, 0)
+        return cleaned
+
+    @classmethod
+    def _remove_low_signal_logo_pixels(cls, image: Image.Image) -> Image.Image:
+        cleaned = image.convert("RGBA").copy()
+        pixels = cleaned.load()
+        for y in range(cleaned.height):
+            for x in range(cleaned.width):
+                if cls._logo_pixel_is_high_signal_mark(pixels[x, y]):
+                    continue
+                red, green, blue, _alpha = pixels[x, y]
+                pixels[x, y] = (red, green, blue, 0)
+        return cleaned
+
+    @staticmethod
+    def _logo_bbox_has_large_margins(
+        *,
+        image_width: int,
+        image_height: int,
+        bbox: tuple[int, int, int, int],
+    ) -> bool:
+        visual_width = bbox[2] - bbox[0]
+        visual_height = bbox[3] - bbox[1]
+        visual_area = visual_width * visual_height
+        image_area = max(image_width * image_height, 1)
+        return (
+            visual_area <= image_area * 0.88
+            or visual_width <= int(image_width * 0.94)
+            or visual_height <= int(image_height * 0.94)
+        )
+
     @classmethod
     def _strip_logo_background_if_safe(cls, image: Image.Image) -> Image.Image:
         rgba = image.convert("RGBA")
@@ -826,17 +959,39 @@ class RendererService:
                     cleaned_pixels[x, y] = (red, green, blue, 0)
         return cleaned
 
-    @staticmethod
-    def _trim_transparent_logo_margins(image: Image.Image) -> Image.Image:
+    @classmethod
+    def _trim_transparent_logo_margins(cls, image: Image.Image) -> Image.Image:
         rgba = image.convert("RGBA")
         alpha = rgba.getchannel("A")
         bbox = alpha.getbbox()
         if not bbox:
             return rgba
-        left, top, right, bottom = bbox
-        if left == 0 and top == 0 and right == rgba.width and bottom == rgba.height:
-            return rgba
-        return rgba.crop(bbox)
+        cropped = rgba.crop(bbox)
+        if cls._edge_background_should_strip(cropped, threshold=235):
+            matte = cls._median_edge_color(cropped)
+            if matte is not None:
+                visual_bbox = cls._visual_logo_mark_bbox(cropped, matte)
+                if visual_bbox is not None:
+                    if cls._logo_bbox_has_large_margins(
+                        image_width=cropped.width,
+                        image_height=cropped.height,
+                        bbox=visual_bbox,
+                    ):
+                        cleaned = cls._remove_logo_matte_pixels(cropped, matte)
+                        cleaned_bbox = cleaned.getchannel("A").getbbox()
+                        if cleaned_bbox:
+                            return cleaned.crop(cleaned_bbox)
+        visual_bbox = cls._visual_logo_high_signal_bbox(cropped)
+        if visual_bbox is not None and cls._logo_bbox_has_large_margins(
+            image_width=cropped.width,
+            image_height=cropped.height,
+            bbox=visual_bbox,
+        ):
+            cleaned = cls._remove_low_signal_logo_pixels(cropped)
+            cleaned_bbox = cleaned.getchannel("A").getbbox()
+            if cleaned_bbox:
+                return cleaned.crop(cleaned_bbox)
+        return cropped
 
     def _discover_logo_storage_path(self, payload: RendererInput) -> str | None:
         base_path = getattr(self.storage, "base_path", None)
@@ -2242,13 +2397,51 @@ class RendererService:
                     self._strip_logo_background_if_safe(raw.convert("RGBA"))
                 )
                 contained = ImageOps.contain(logo, (zone.width, zone.height), method=Image.Resampling.LANCZOS)
-                offset_x = zone.x + max((zone.width - contained.width) // 2, 0)
-                offset_y = zone.y + max((zone.height - contained.height) // 2, 0)
+                offset_x, offset_y = self._logo_offset_in_zone(
+                    canvas_width=canvas.width,
+                    canvas_height=canvas.height,
+                    zone_x=zone.x,
+                    zone_y=zone.y,
+                    zone_width=zone.width,
+                    zone_height=zone.height,
+                    logo_width=contained.width,
+                    logo_height=contained.height,
+                )
                 canvas.paste(contained, (offset_x, offset_y), contained)
         except OSError:
             logger.warning("renderer.logo.unreadable storage_path=%s", logo_path)
             return False
         return True
+
+    @staticmethod
+    def _logo_offset_in_zone(
+        *,
+        canvas_width: int,
+        canvas_height: int,
+        zone_x: int,
+        zone_y: int,
+        zone_width: int,
+        zone_height: int,
+        logo_width: int,
+        logo_height: int,
+    ) -> tuple[int, int]:
+        center_x = zone_x + (zone_width / 2.0)
+        center_y = zone_y + (zone_height / 2.0)
+        horizontal = "left" if center_x <= canvas_width * 0.34 else ("right" if center_x >= canvas_width * 0.66 else "center")
+        vertical = "top" if center_y <= canvas_height * 0.34 else ("bottom" if center_y >= canvas_height * 0.66 else "middle")
+        if horizontal == "left":
+            offset_x = zone_x
+        elif horizontal == "right":
+            offset_x = zone_x + max(zone_width - logo_width, 0)
+        else:
+            offset_x = zone_x + max((zone_width - logo_width) // 2, 0)
+        if vertical == "top":
+            offset_y = zone_y
+        elif vertical == "bottom":
+            offset_y = zone_y + max(zone_height - logo_height, 0)
+        else:
+            offset_y = zone_y + max((zone_height - logo_height) // 2, 0)
+        return (int(offset_x), int(offset_y))
 
     def _paste_decorative_asset(
         self,
@@ -2348,6 +2541,17 @@ class RendererService:
         return cleaned
 
     @staticmethod
+    def _logo_box_profile_for_canvas(width: int, height: int) -> tuple[int, int]:
+        aspect_ratio = width / max(height, 1)
+        if aspect_ratio >= 1.3:
+            logo_width = max(int(width * 0.15), 150)
+            logo_height = max(int(height * 0.075), 50)
+        else:
+            logo_width = max(int(width * 0.17), 160)
+            logo_height = max(int(height * 0.075), 50)
+        return (min(logo_width, width), min(logo_height, height))
+
+    @staticmethod
     def _scene_graph_box(element: SceneGraphElement, width: int, height: int) -> tuple[int, int, int, int] | None:
         geometry = element.geometry
         if geometry.width is None or geometry.height is None:
@@ -2365,23 +2569,46 @@ class RendererService:
         resolved_height = _resolve(geometry.height, height)
         resolved_x = _resolve(geometry.x, width) if geometry.x is not None else 0
         resolved_y = _resolve(geometry.y, height) if geometry.y is not None else 0
-        anchor_defaults = {
-            "top-left": (0.08, 0.08),
-            "top-center": (0.5, 0.08),
-            "top-right": (0.82, 0.08),
-            "center-left": (0.08, 0.46),
-            "center": (0.5, 0.46),
-            "center-right": (0.82, 0.46),
-            "bottom-left": (0.08, 0.84),
-            "bottom-center": (0.5, 0.84),
-            "bottom-right": (0.82, 0.84),
-        }
+        role = str(element.role or element.element_type or "").strip().lower()
+        if role == "logo":
+            max_logo_width, max_logo_height = RendererService._logo_box_profile_for_canvas(width, height)
+            resolved_width = min(resolved_width, max_logo_width)
+            resolved_height = min(resolved_height, max_logo_height)
         if geometry.anchor and (geometry.x is None or geometry.y is None):
-            anchor_x, anchor_y = anchor_defaults.get(geometry.anchor, (0.08, 0.08))
             if geometry.x is None:
-                resolved_x = max(int(round((anchor_x * width) - (resolved_width / 2))), 0)
+                if "left" in geometry.anchor:
+                    resolved_x = min(20, max(width - resolved_width, 0))
+                elif "right" in geometry.anchor:
+                    resolved_x = max(width - resolved_width - 20, 0)
+                else:
+                    resolved_x = max((width - resolved_width) // 2, 0)
             if geometry.y is None:
-                resolved_y = max(int(round((anchor_y * height) - (resolved_height / 2))), 0)
+                if "top" in geometry.anchor:
+                    resolved_y = min(20, max(height - resolved_height, 0))
+                elif "bottom" in geometry.anchor:
+                    resolved_y = max(height - resolved_height - 20, 0)
+                else:
+                    resolved_y = max((height - resolved_height) // 2, 0)
+        if role == "logo":
+            anchor = str(geometry.anchor or "").strip().lower()
+            if not anchor:
+                center_x = resolved_x + (resolved_width / 2.0)
+                center_y = resolved_y + (resolved_height / 2.0)
+                vertical = "top" if center_y <= height * 0.34 else ("bottom" if center_y >= height * 0.66 else "middle")
+                horizontal = "left" if center_x <= width * 0.34 else ("right" if center_x >= width * 0.66 else "center")
+                anchor = f"{vertical}-{horizontal}"
+            if "left" in anchor:
+                resolved_x = min(20, max(width - resolved_width, 0))
+            elif "right" in anchor:
+                resolved_x = max(width - resolved_width - 20, 0)
+            elif "center" in anchor:
+                resolved_x = max((width - resolved_width) // 2, 0)
+            if "top" in anchor:
+                resolved_y = min(20, max(height - resolved_height, 0))
+            elif "bottom" in anchor:
+                resolved_y = max(height - resolved_height - 20, 0)
+            elif "middle" in anchor or anchor == "center":
+                resolved_y = max((height - resolved_height) // 2, 0)
         return (
             resolved_x,
             resolved_y,

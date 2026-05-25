@@ -428,7 +428,7 @@ def test_orchestrator_logo_safe_zone_guidance_prefers_top_right_hint_and_minimum
     )
 
     assert "top-right" in guidance
-    assert "22% of the width" in guidance
+    assert "20% of the width" in guidance
 
 
 def test_orchestrator_logo_safe_zone_guidance_respects_viable_synthesized_logo_geometry() -> None:
@@ -474,7 +474,7 @@ def test_orchestrator_logo_safe_zone_guidance_respects_viable_synthesized_logo_g
     guidance = AIOrchestratorService._logo_safe_zone_guidance(request, scene_graph, hint="Top-right")
 
     assert "top-right" in guidance
-    assert "19% of the width" in guidance
+    assert "17% of the width" in guidance
 
 
 def test_orchestrator_build_carousel_slide_render_prompt_uses_slide_or_planning_logo_hint() -> None:
@@ -601,6 +601,26 @@ def test_orchestrator_build_carousel_slide_render_prompt_prefers_brand_logo_poli
 
     assert "top-right" in prompt
     assert "bottom-right" not in prompt
+
+
+def test_orchestrator_logo_policy_does_not_expand_explicit_allowed_positions() -> None:
+    policy = AIOrchestratorService._brand_logo_placement_policy(
+        {
+            "visual_identity": {
+                "logo_position": "top-right",
+                "design_system": {"logo_anchor": "bottom-right"},
+                "logo_placement": {
+                    "allowed_positions": ["top-left"],
+                    "default_position": "top-left",
+                },
+            }
+        }
+    )
+
+    assert policy == {
+        "allowed_positions": ["top-left"],
+        "default_position": "top-left",
+    }
 
 
 def test_orchestrator_build_final_render_prompt_includes_design_system_guidance() -> None:
@@ -4198,7 +4218,7 @@ def test_orchestrator_finalize_logo_scene_policy_keeps_headline_out_of_logo_safe
     )
 
 
-def test_orchestrator_default_logo_safe_zone_geometry_uses_reference_creative_spacing() -> None:
+def test_orchestrator_default_logo_safe_zone_geometry_uses_20px_edge_margin() -> None:
     request = AIOrchestrationRequest(
         tenant_id=uuid4(),
         brand_space_id=uuid4(),
@@ -4222,9 +4242,33 @@ def test_orchestrator_default_logo_safe_zone_geometry_uses_reference_creative_sp
         anchor=("top", "left"),
     )
 
-    assert geometry[0] == 0.03
-    assert geometry[1] == 0.03
-    assert geometry[2] >= 0.19
+    assert round(geometry[0], 4) == round(20 / 1080, 4)
+    assert round(geometry[1], 4) == round(20 / 1350, 4)
+    assert geometry[2] >= 0.14
+
+
+def test_orchestrator_normalized_logo_safe_zone_snaps_viable_box_to_20px_edge() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a branded post",
+        studio_panel={"size": {"width": 1024, "height": 1536}, "platform_preset": "linkedin", "format": "static", "file_type": "png"},
+        resolved_brand_context={},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+    )
+
+    geometry = AIOrchestratorService._normalize_logo_safe_zone_geometry(
+        request=request,
+        geometry=(0.08, 0.09, 0.2, 0.08),
+        hint="top-left",
+    )
+
+    assert round(geometry[0], 4) == round(20 / 1024, 4)
+    assert round(geometry[1], 4) == round(20 / 1536, 4)
+    assert geometry[2] == 0.17
 
 
 def test_orchestrator_normalize_logo_safe_zone_geometry_uses_reference_ratio_when_model_box_is_generic() -> None:
@@ -4252,8 +4296,8 @@ def test_orchestrator_normalize_logo_safe_zone_geometry_uses_reference_ratio_whe
         hint="top-right",
     )
 
-    assert geometry[2] >= 0.2
-    assert geometry[3] >= 0.12
+    assert geometry[2] >= 0.15
+    assert geometry[3] >= 0.085
 
 
 def test_orchestrator_scene_graph_inherits_repaired_text_payload_copy() -> None:
