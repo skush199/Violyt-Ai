@@ -23,6 +23,7 @@ import {
   sanitizeOption,
   sanitizeOptionArray,
 } from "@/lib/brand-space-options";
+import { normalizeLogoPlacementPolicy } from "@/lib/logo-placement";
 import { createPersistedBrandUploadItem, emptyBrandFormState, type BrandFormState } from "@/types/brand-space.types";
 import type { UploadedBrandAssets } from "@/lib/brand-space-persistence";
 
@@ -275,10 +276,7 @@ export function mapBrandOverviewToForm(overview: BrandOverviewResponse): BrandFo
   form.visualIdentity = {
     brandMood: String(visualIdentity.brand_mood || ""),
     visualStyle: String(visualIdentity.visual_style || ""),
-    allowedLogoPlacements: Array.isArray(logoPlacement.allowed_positions)
-      ? logoPlacement.allowed_positions.map((item) => String(item))
-      : [],
-    defaultLogoPlacement: String(logoPlacement.default_position || ""),
+    ...normalizeLogoPlacementPolicy(logoPlacement.allowed_positions, logoPlacement.default_position),
     referenceCreatives: createKnowledgeItems(visualIdentity.reference_creatives, "reference_creative"),
     moodBoards: createKnowledgeItems(visualIdentity.mood_boards, "mood_board", ["Mood Board"]),
     primaryColor: String(colorPalette.primary || ""),
@@ -470,6 +468,10 @@ export function mapBrandSections(form: BrandFormState, uploads?: UploadedBrandAs
   const uploaded = uploads;
   const normalized = normalizeBrandSelections(form);
   const logoAssets = uploaded?.logos?.length ? uploaded.logos : uploaded?.logo ? [uploaded.logo] : [];
+  const logoPlacementPolicy = normalizeLogoPlacementPolicy(
+    form.visualIdentity.allowedLogoPlacements,
+    form.visualIdentity.defaultLogoPlacement,
+  );
 
   return [
     {
@@ -636,8 +638,8 @@ export function mapBrandSections(form: BrandFormState, uploads?: UploadedBrandAs
         brand_mood: form.visualIdentity.brandMood || "",
         visual_style: form.visualIdentity.visualStyle || "",
         logo_placement: {
-          allowed_positions: form.visualIdentity.allowedLogoPlacements,
-          default_position: form.visualIdentity.defaultLogoPlacement || "",
+          allowed_positions: logoPlacementPolicy.allowedLogoPlacements,
+          default_position: logoPlacementPolicy.defaultLogoPlacement,
         },
         brand_color_palette: {
           primary: form.visualIdentity.primaryColor || "",

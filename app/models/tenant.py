@@ -23,7 +23,7 @@ class Tenant(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     metadata_json: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
 
-    users: Mapped[list["User"]] = relationship(back_populates="tenant")
+    users: Mapped[list["User"]] = relationship(back_populates="tenant", passive_deletes=True)
 
 
 class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):

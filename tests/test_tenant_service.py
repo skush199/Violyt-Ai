@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.sql.dml import Delete
 
 from app.core.exceptions import DuplicateResourceError
 from app.schemas.tenant import (
@@ -39,6 +40,17 @@ class DummyExecuteResult:
 
     def scalar_one_or_none(self):  # noqa: ANN201
         return self.value
+
+
+class DummyScalarListResult:
+    def __init__(self, values) -> None:  # noqa: ANN001
+        self.values = values
+
+    def scalars(self):  # noqa: ANN201
+        return self
+
+    def all(self):  # noqa: ANN201
+        return self.values
 
 
 class DummyStorage:
@@ -109,6 +121,28 @@ async def test_update_tenant_persists_metadata_and_active_flag():
     assert admin.phone_number == "+91 9999999999"
     assert session.commits == 1
     assert session.refreshed == [tenant]
+
+
+async def test_delete_tenant_removes_logo_and_commits():
+    session = DummySession()
+    service = TenantService(session)
+    tenant = build_tenant(logo_asset_path="tenant-1/global/tenant-assets/logo.png")
+    storage = DummyStorage()
+    service.get_tenant = AsyncMock(return_value=tenant)
+    service.storage = storage
+    session.execute.return_value = DummyScalarListResult([])
+
+    await service.delete_tenant(tenant.id)
+
+    assert storage.deleted == ["tenant-1/global/tenant-assets/logo.png"]
+    delete_statements = [
+        call.args[0]
+        for call in session.execute.await_args_list
+        if isinstance(call.args[0], Delete)
+    ]
+    assert any(statement.table.name == "users" for statement in delete_statements)
+    assert delete_statements[-1].table.name == "tenants"
+    assert session.commits == 1
 
 
 async def test_upload_logo_replaces_existing_storage_path():

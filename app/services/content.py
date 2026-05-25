@@ -232,6 +232,22 @@ class ContentService:
         self.storage = LocalObjectStorage()
 
     @staticmethod
+    def _run_ragas_evaluation_for_trace(trace_id: str) -> None:
+        from scripts.ragas_evaluation import DEFAULT_OUTPUT_DIR, DEFAULT_TRACE_ROOT, evaluate_traces
+
+        evaluate_traces(DEFAULT_TRACE_ROOT, DEFAULT_OUTPUT_DIR, trace_id)
+
+    async def _run_ragas_evaluation_after_generation(self, trace_id: str | None, *, generated_image_count: int) -> None:
+        if not trace_id or generated_image_count <= 0:
+            return
+
+        try:
+            await asyncio.to_thread(self._run_ragas_evaluation_for_trace, trace_id)
+            logger.info("content.generate.ragas_evaluation_complete trace_id=%s", trace_id)
+        except Exception:
+            logger.exception("content.generate.ragas_evaluation_failed trace_id=%s", trace_id)
+
+    @staticmethod
     def _merge_studio_panel(base: dict | None, override: dict | None) -> dict:
         merged = deepcopy(base or {})
         if not override:
@@ -2793,6 +2809,139 @@ class ContentService:
             cleared.alpha_composite(blended, (left, top))
         return cleared, True
 
+    @staticmethod
+    def _logo_pixel_is_mark(
+        pixel: tuple[int, int, int, int],
+        matte: tuple[int, int, int],
+    ) -> bool:
+        red, green, blue, alpha = pixel
+        if alpha <= 24:
+            return False
+        distance = max(abs(red - matte[0]), abs(green - matte[1]), abs(blue - matte[2]))
+        chroma = max(red, green, blue) - min(red, green, blue)
+        return distance >= 50 or (distance >= 32 and chroma >= 26)
+
+    @staticmethod
+    def _logo_pixel_is_high_signal_mark(pixel: tuple[int, int, int, int]) -> bool:
+        red, green, blue, alpha = pixel
+        if alpha <= 24:
+            return False
+        chroma = max(red, green, blue) - min(red, green, blue)
+        luminance = (0.2126 * red) + (0.7152 * green) + (0.0722 * blue)
+        return (chroma >= 32 and luminance <= 248) or luminance <= 120
+
+    @staticmethod
+    def _median_edge_color(image: Image.Image) -> tuple[int, int, int] | None:
+        rgba = image.convert("RGBA")
+        width, height = rgba.size
+        if width <= 0 or height <= 0:
+            return None
+        pixels = rgba.load()
+        edge_pixels: list[tuple[int, int, int, int]] = []
+        for x in range(width):
+            edge_pixels.append(pixels[x, 0])
+            edge_pixels.append(pixels[x, height - 1])
+        for y in range(1, max(height - 1, 1)):
+            edge_pixels.append(pixels[0, y])
+            edge_pixels.append(pixels[width - 1, y])
+        opaque_edges = [pixel for pixel in edge_pixels if pixel[3] > 220]
+        if not opaque_edges:
+            return None
+        return (
+            sorted(pixel[0] for pixel in opaque_edges)[len(opaque_edges) // 2],
+            sorted(pixel[1] for pixel in opaque_edges)[len(opaque_edges) // 2],
+            sorted(pixel[2] for pixel in opaque_edges)[len(opaque_edges) // 2],
+        )
+
+    @classmethod
+    def _visual_logo_mark_bbox(
+        cls,
+        image: Image.Image,
+        matte: tuple[int, int, int],
+    ) -> tuple[int, int, int, int] | None:
+        rgba = image.convert("RGBA")
+        pixels = rgba.load()
+        left = rgba.width
+        top = rgba.height
+        right = 0
+        bottom = 0
+        for y in range(rgba.height):
+            for x in range(rgba.width):
+                if not cls._logo_pixel_is_mark(pixels[x, y], matte):
+                    continue
+                left = min(left, x)
+                top = min(top, y)
+                right = max(right, x + 1)
+                bottom = max(bottom, y + 1)
+        if right <= left or bottom <= top:
+            return None
+        return (left, top, right, bottom)
+
+    @classmethod
+    def _visual_logo_high_signal_bbox(cls, image: Image.Image) -> tuple[int, int, int, int] | None:
+        rgba = image.convert("RGBA")
+        pixels = rgba.load()
+        left = rgba.width
+        top = rgba.height
+        right = 0
+        bottom = 0
+        for y in range(rgba.height):
+            for x in range(rgba.width):
+                if not cls._logo_pixel_is_high_signal_mark(pixels[x, y]):
+                    continue
+                left = min(left, x)
+                top = min(top, y)
+                right = max(right, x + 1)
+                bottom = max(bottom, y + 1)
+        if right <= left or bottom <= top:
+            return None
+        return (left, top, right, bottom)
+
+    @classmethod
+    def _remove_logo_matte_pixels(
+        cls,
+        image: Image.Image,
+        matte: tuple[int, int, int],
+    ) -> Image.Image:
+        cleaned = image.convert("RGBA").copy()
+        pixels = cleaned.load()
+        for y in range(cleaned.height):
+            for x in range(cleaned.width):
+                if cls._logo_pixel_is_mark(pixels[x, y], matte):
+                    continue
+                red, green, blue, _alpha = pixels[x, y]
+                pixels[x, y] = (red, green, blue, 0)
+        return cleaned
+
+    @classmethod
+    def _remove_low_signal_logo_pixels(cls, image: Image.Image) -> Image.Image:
+        cleaned = image.convert("RGBA").copy()
+        pixels = cleaned.load()
+        for y in range(cleaned.height):
+            for x in range(cleaned.width):
+                if cls._logo_pixel_is_high_signal_mark(pixels[x, y]):
+                    continue
+                red, green, blue, _alpha = pixels[x, y]
+                pixels[x, y] = (red, green, blue, 0)
+        return cleaned
+
+    @staticmethod
+    def _logo_bbox_has_large_margins(
+        *,
+        image_width: int,
+        image_height: int,
+        bbox: tuple[int, int, int, int],
+    ) -> bool:
+        visual_width = bbox[2] - bbox[0]
+        visual_height = bbox[3] - bbox[1]
+        visual_area = visual_width * visual_height
+        image_area = max(image_width * image_height, 1)
+        return (
+            visual_area <= image_area * 0.88
+            or visual_width <= int(image_width * 0.94)
+            or visual_height <= int(image_height * 0.94)
+        )
+
     @classmethod
     def _trim_transparent_logo_margins(cls, image: Image.Image) -> Image.Image:
         rgba = image.convert("RGBA")
@@ -2800,10 +2949,33 @@ class ContentService:
         bbox = alpha.getbbox()
         if not bbox:
             return rgba
-        left, top, right, bottom = bbox
-        if left == 0 and top == 0 and right == rgba.width and bottom == rgba.height:
-            return rgba
-        return rgba.crop(bbox)
+        cropped = rgba.crop(bbox)
+        matte = cls._edge_matte_color(cropped)
+        if matte is None and cls._edge_background_should_strip(cropped, threshold=235):
+            matte = cls._median_edge_color(cropped)
+        if matte is not None:
+            visual_bbox = cls._visual_logo_mark_bbox(cropped, matte)
+            if visual_bbox is not None:
+                if cls._logo_bbox_has_large_margins(
+                    image_width=cropped.width,
+                    image_height=cropped.height,
+                    bbox=visual_bbox,
+                ):
+                    cleaned = cls._remove_logo_matte_pixels(cropped, matte)
+                    cleaned_bbox = cleaned.getchannel("A").getbbox()
+                    if cleaned_bbox:
+                        return cleaned.crop(cleaned_bbox)
+        visual_bbox = cls._visual_logo_high_signal_bbox(cropped)
+        if visual_bbox is not None and cls._logo_bbox_has_large_margins(
+            image_width=cropped.width,
+            image_height=cropped.height,
+            bbox=visual_bbox,
+        ):
+            cleaned = cls._remove_low_signal_logo_pixels(cropped)
+            cleaned_bbox = cleaned.getchannel("A").getbbox()
+            if cleaned_bbox:
+                return cleaned.crop(cleaned_bbox)
+        return cropped
 
     @staticmethod
     def _logo_footprint_clearance_box(
@@ -6171,6 +6343,140 @@ class ContentService:
             return None
         return (vertical, horizontal)
 
+    @classmethod
+    def _normalize_logo_position_option(cls, value: object) -> str:
+        text = str(value or "").strip().lower().replace("_", "-").replace(" ", "-")
+        while "--" in text:
+            text = text.replace("--", "-")
+        aliases = {
+            "upper-right": "top-right",
+            "right-top": "top-right",
+            "upper-left": "top-left",
+            "left-top": "top-left",
+            "lower-right": "bottom-right",
+            "right-bottom": "bottom-right",
+            "lower-left": "bottom-left",
+            "left-bottom": "bottom-left",
+            "top-middle": "top-center",
+            "middle-top": "top-center",
+            "bottom-middle": "bottom-center",
+            "middle-bottom": "bottom-center",
+            "middle": "center",
+            "middle-center": "center",
+            "center-middle": "center",
+        }
+        text = aliases.get(text, text)
+        return text if text in {
+            "top-right",
+            "top-left",
+            "bottom-right",
+            "bottom-left",
+            "top-center",
+            "bottom-center",
+            "center",
+        } else ""
+
+    @classmethod
+    def _logo_anchor_to_position(cls, anchor: tuple[str, str]) -> str:
+        vertical, horizontal = anchor
+        if vertical == "middle" and horizontal == "center":
+            return "center"
+        return f"{vertical}-{horizontal}"
+
+    @classmethod
+    def _logo_anchor_from_position(cls, position: str) -> tuple[str, str] | None:
+        normalized = cls._normalize_logo_position_option(position)
+        if not normalized:
+            return None
+        if normalized == "center":
+            return ("middle", "center")
+        vertical, horizontal = normalized.split("-", 1)
+        return (vertical, horizontal)
+
+    @classmethod
+    def _brand_logo_placement_policy_from_payloads(
+        cls,
+        content: ContentVersion,
+        explainability: dict,
+    ) -> dict[str, object]:
+        visual_identity = {}
+        for payload in (
+            explainability,
+            content.explainability_metadata if isinstance(content.explainability_metadata, dict) else {},
+        ):
+            if not isinstance(payload, dict):
+                continue
+            snapshot = payload.get("brand_context_snapshot")
+            if isinstance(snapshot, dict) and isinstance(snapshot.get("visual_identity"), dict):
+                visual_identity = snapshot["visual_identity"]
+                break
+            if isinstance(payload.get("visual_identity"), dict):
+                visual_identity = payload["visual_identity"]
+                break
+        placement = visual_identity.get("logo_placement") if isinstance(visual_identity.get("logo_placement"), dict) else {}
+        allowed: list[str] = []
+        for raw_position in placement.get("allowed_positions") or placement.get("positions") or []:
+            normalized = cls._normalize_logo_position_option(raw_position)
+            if normalized and normalized not in allowed:
+                allowed.append(normalized)
+        has_explicit_allowed_positions = bool(allowed)
+        default_position = cls._normalize_logo_position_option(
+            placement.get("default_position")
+            or placement.get("preferred_position")
+            or placement.get("logo_position")
+            or visual_identity.get("logo_position")
+        )
+        if default_position and allowed and default_position not in allowed:
+            default_position = ""
+        if not default_position and allowed:
+            default_position = allowed[0]
+        return {
+            "allowed_positions": allowed,
+            "default_position": default_position,
+            "explicit": has_explicit_allowed_positions,
+        }
+
+    @classmethod
+    def _candidate_logo_anchors(
+        cls,
+        *,
+        content: ContentVersion,
+        explainability: dict,
+        preferred_hint: str | None,
+    ) -> list[tuple[str, str]]:
+        policy = cls._brand_logo_placement_policy_from_payloads(content, explainability)
+        default_position = cls._normalize_logo_position_option(policy.get("default_position"))
+        preferred_position = cls._normalize_logo_position_option(preferred_hint)
+        allowed_positions = [
+            cls._normalize_logo_position_option(position)
+            for position in (policy.get("allowed_positions") or [])
+        ]
+        allowed_positions = [position for position in allowed_positions if position]
+        if allowed_positions:
+            ordered_positions = [
+                position
+                for position in (preferred_position, default_position, *allowed_positions)
+                if position and position in allowed_positions
+            ]
+        else:
+            ordered_positions = [
+                preferred_position,
+                default_position,
+                "top-right",
+                "top-left",
+                "bottom-right",
+                "bottom-left",
+                "top-center",
+                "bottom-center",
+                "center",
+            ]
+        anchors: list[tuple[str, str]] = []
+        for position in ordered_positions:
+            anchor = cls._logo_anchor_from_position(position)
+            if anchor and anchor not in anchors:
+                anchors.append(anchor)
+        return anchors or [("top", "right")]
+
     @staticmethod
     def _logo_anchor_from_box(
         box: tuple[int, int, int, int],
@@ -6194,20 +6500,37 @@ class ContentService:
     ) -> tuple[int, int]:
         normalized_format = str(format_name or "").strip().lower()
         if normalized_format == "carousel":
-            width = max(int(canvas_width * 0.24), 200)
-            height = max(int(canvas_height * 0.1), 72)
+            width = max(int(canvas_width * 0.2), 170)
+            height = max(int(canvas_height * 0.085), 60)
         elif normalized_format == "infographic":
-            width = max(int(canvas_width * 0.22), 190)
-            height = max(int(canvas_height * 0.095), 68)
+            width = max(int(canvas_width * 0.19), 160)
+            height = max(int(canvas_height * 0.08), 56)
         else:
             aspect_ratio = canvas_width / max(canvas_height, 1)
             if aspect_ratio >= 1.3:
-                width = max(int(canvas_width * 0.18), 180)
-                height = max(int(canvas_height * 0.09), 60)
+                width = max(int(canvas_width * 0.15), 150)
+                height = max(int(canvas_height * 0.075), 50)
             else:
-                width = max(int(canvas_width * 0.19), 180)
-                height = max(int(canvas_height * 0.085), 60)
+                width = max(int(canvas_width * 0.17), 160)
+                height = max(int(canvas_height * 0.075), 50)
         return (min(width, canvas_width), min(height, canvas_height))
+
+    @classmethod
+    def _cap_logo_box_to_profile(
+        cls,
+        *,
+        box: tuple[int, int, int, int],
+        canvas_width: int,
+        canvas_height: int,
+        format_name: str,
+    ) -> tuple[int, int, int, int]:
+        x, y, width, height = box
+        preferred_width, preferred_height = cls._logo_box_profile_for_format(
+            canvas_width=canvas_width,
+            canvas_height=canvas_height,
+            format_name=format_name,
+        )
+        return (x, y, min(width, preferred_width), min(height, preferred_height))
 
     @classmethod
     def _default_ai_logo_box(
@@ -6219,20 +6542,18 @@ class ContentService:
         anchor: tuple[str, str] | None,
         reference_box: tuple[int, int, int, int] | None = None,
     ) -> tuple[int, int, int, int]:
-        margin_x = max(int(canvas_width * 0.04), 24)
-        margin_y = max(int(canvas_height * 0.04), 24)
+        vertical, horizontal = anchor or ("top", "right")
+        margin_x = min(20, max(canvas_width - 1, 0))
+        margin_y = min(20, max(canvas_height - 1, 0))
         width, height = cls._logo_box_profile_for_format(
             canvas_width=canvas_width,
             canvas_height=canvas_height,
             format_name=format_name,
         )
         if reference_box is not None:
-            ref_x, ref_y, ref_width, ref_height = reference_box
-            width = max(width, ref_width)
-            height = max(height, ref_height)
-            margin_x = max(min(ref_x, max(int(canvas_width * 0.08), 48)), 16)
-            margin_y = max(min(ref_y, max(int(canvas_height * 0.08), 64)), 16)
-        vertical, horizontal = anchor or ("top", "right")
+            _ref_x, _ref_y, ref_width, ref_height = reference_box
+            width = max(min(width, ref_width), int(width * 0.75))
+            height = max(min(height, ref_height), int(height * 0.75))
         if horizontal == "left":
             x = margin_x
         elif horizontal == "center":
@@ -6248,6 +6569,415 @@ class ContentService:
         width = min(width, max(canvas_width - x, 1))
         height = min(height, max(canvas_height - y, 1))
         return (x, y, width, height)
+
+    @staticmethod
+    def _snap_logo_box_to_anchor_edge(
+        *,
+        box: tuple[int, int, int, int],
+        canvas_width: int,
+        canvas_height: int,
+        anchor: tuple[str, str],
+    ) -> tuple[int, int, int, int]:
+        x, y, width, height = box
+        vertical, horizontal = anchor
+        if horizontal == "left":
+            x = min(20, max(canvas_width - width, 0))
+        elif horizontal == "right":
+            x = max(canvas_width - width - 20, 0)
+        elif horizontal == "center":
+            x = max((canvas_width - width) // 2, 0)
+        if vertical == "top":
+            y = min(20, max(canvas_height - height, 0))
+        elif vertical == "bottom":
+            y = max(canvas_height - height - 20, 0)
+        elif vertical == "middle":
+            y = max((canvas_height - height) // 2, 0)
+        width = min(width, max(canvas_width - x, 1))
+        height = min(height, max(canvas_height - y, 1))
+        return (int(x), int(y), int(width), int(height))
+
+    @staticmethod
+    def _logo_offset_in_box(
+        *,
+        box: tuple[int, int, int, int],
+        logo_width: int,
+        logo_height: int,
+        anchor: str,
+    ) -> tuple[int, int]:
+        x, y, width, height = box
+        normalized_anchor = str(anchor or "").strip().lower()
+        if "left" in normalized_anchor:
+            offset_x = x
+        elif "right" in normalized_anchor:
+            offset_x = x + max(width - logo_width, 0)
+        else:
+            offset_x = x + max((width - logo_width) // 2, 0)
+        if "top" in normalized_anchor:
+            offset_y = y
+        elif "bottom" in normalized_anchor:
+            offset_y = y + max(height - logo_height, 0)
+        else:
+            offset_y = y + max((height - logo_height) // 2, 0)
+        return (int(offset_x), int(offset_y))
+
+    @staticmethod
+    def _rect_overlap_area(
+        first: tuple[int, int, int, int],
+        second: tuple[int, int, int, int],
+    ) -> int:
+        left = max(first[0], second[0])
+        top = max(first[1], second[1])
+        right = min(first[0] + first[2], second[0] + second[2])
+        bottom = min(first[1] + first[3], second[1] + second[3])
+        if right <= left or bottom <= top:
+            return 0
+        return (right - left) * (bottom - top)
+
+    @staticmethod
+    def _expanded_box_with_padding(
+        *,
+        box: tuple[int, int, int, int],
+        canvas_width: int,
+        canvas_height: int,
+        pad_x: int,
+        pad_y: int,
+    ) -> tuple[int, int, int, int]:
+        x, y, width, height = box
+        left = max(x - pad_x, 0)
+        top = max(y - pad_y, 0)
+        right = min(x + width + pad_x, canvas_width)
+        bottom = min(y + height + pad_y, canvas_height)
+        return (left, top, max(right - left, 1), max(bottom - top, 1))
+
+    @staticmethod
+    def _logo_collision_padding(
+        *,
+        logo_width: int,
+        logo_height: int,
+        canvas_width: int,
+        canvas_height: int,
+    ) -> tuple[int, int]:
+        pad_x = max(int(logo_width * 0.08), int(canvas_width * 0.006), 4)
+        pad_y = max(int(logo_height * 0.08), int(canvas_height * 0.002), 2)
+        return (pad_x, pad_y)
+
+    @classmethod
+    def _coerce_layout_obstruction_box(
+        cls,
+        candidate: dict,
+        *,
+        canvas_width: int,
+        canvas_height: int,
+    ) -> tuple[int, int, int, int] | None:
+        geometry = candidate.get("geometry") if isinstance(candidate.get("geometry"), dict) else candidate
+        units = str(geometry.get("units") or candidate.get("units") or "").strip().lower()
+        if "w" in geometry and "width" not in geometry:
+            geometry = {**geometry, "width": geometry.get("w")}
+        if "h" in geometry and "height" not in geometry:
+            geometry = {**geometry, "height": geometry.get("h")}
+        return cls._coerce_ai_logo_box(
+            geometry,
+            canvas_width=canvas_width,
+            canvas_height=canvas_height,
+            units=units,
+        )
+
+    @classmethod
+    def _logo_layout_obstruction_boxes(
+        cls,
+        *,
+        content: ContentVersion,
+        explainability: dict,
+        canvas_width: int,
+        canvas_height: int,
+    ) -> list[dict[str, object]]:
+        boxes: list[dict[str, object]] = []
+        scene_graph = explainability.get("scene_graph") if isinstance(explainability, dict) else {}
+        for element in (scene_graph.get("elements") or []) if isinstance(scene_graph, dict) else []:
+            if not isinstance(element, dict):
+                continue
+            role = str(element.get("role") or element.get("element_type") or "").strip().lower()
+            if role == "logo" or not role:
+                continue
+            box = cls._coerce_layout_obstruction_box(
+                element,
+                canvas_width=canvas_width,
+                canvas_height=canvas_height,
+            )
+            if box:
+                boxes.append({"box": box, "role": role, "source": "scene_graph"})
+        blueprint = content.blueprint_payload if isinstance(content.blueprint_payload, dict) else {}
+        for zone in blueprint.get("zones") or []:
+            if not isinstance(zone, dict):
+                continue
+            role = str(zone.get("role") or zone.get("zone_id") or zone.get("id") or "").strip().lower()
+            if "logo" in role or not role:
+                continue
+            box = cls._coerce_layout_obstruction_box(
+                zone,
+                canvas_width=canvas_width,
+                canvas_height=canvas_height,
+            )
+            if box:
+                boxes.append({"box": box, "role": role, "source": "blueprint"})
+        footer_text = cls._ai_final_render_legal_footer_text(
+            content=content,
+            explainability=explainability,
+        )
+        if footer_text:
+            strip_height = max(int(canvas_height * 0.052), 56)
+            boxes.append(
+                {
+                    "box": (0, max(canvas_height - strip_height, 0), canvas_width, strip_height),
+                    "role": "legal_footer",
+                    "source": "footer_fallback",
+                }
+            )
+        return boxes
+
+    @classmethod
+    def _layout_overlap_score(
+        cls,
+        *,
+        safe_box: tuple[int, int, int, int],
+        obstruction_boxes: list[dict[str, object]],
+    ) -> float:
+        safe_area = max(safe_box[2] * safe_box[3], 1)
+        role_weights = {
+            "headline": 5.0,
+            "title": 5.0,
+            "section_label": 4.0,
+            "supporting_line": 3.0,
+            "body": 3.0,
+            "proof_points": 3.0,
+            "stat_highlights": 3.0,
+            "cta": 2.5,
+            "image": 2.0,
+            "hero_visual": 2.0,
+            "content_card": 2.0,
+            "footer": 8.0,
+            "legal": 8.0,
+            "legal_footer": 8.0,
+            "disclaimer": 8.0,
+            "background": 0.1,
+        }
+        score = 0.0
+        for item in obstruction_boxes:
+            box = item.get("box")
+            if not isinstance(box, tuple):
+                continue
+            overlap = cls._rect_overlap_area(safe_box, box)
+            if overlap <= 0:
+                continue
+            role = str(item.get("role") or "").strip().lower()
+            score += (overlap / safe_area) * role_weights.get(role, 2.0)
+        return score
+
+    @staticmethod
+    def _image_region_obstruction_score(
+        image: Image.Image,
+        safe_box: tuple[int, int, int, int],
+    ) -> float:
+        x, y, width, height = safe_box
+        crop = image.crop((x, y, min(x + width, image.width), min(y + height, image.height))).convert("RGB")
+        if crop.width <= 0 or crop.height <= 0:
+            return 0.0
+        sample = crop.resize((max(min(crop.width, 32), 1), max(min(crop.height, 32), 1)), Image.Resampling.BILINEAR)
+        pixels = list(sample.getdata())
+        if not pixels:
+            return 0.0
+        luminances = [(0.2126 * red) + (0.7152 * green) + (0.0722 * blue) for red, green, blue in pixels]
+        avg_luminance = sum(luminances) / len(luminances)
+        variance = sum((value - avg_luminance) ** 2 for value in luminances) / len(luminances)
+        non_quiet = 0
+        row_counts = [0 for _ in range(sample.height)]
+        column_counts = [0 for _ in range(sample.width)]
+        for index, (red, green, blue) in enumerate(pixels):
+            chroma = max(red, green, blue) - min(red, green, blue)
+            luminance = (0.2126 * red) + (0.7152 * green) + (0.0722 * blue)
+            if luminance < 238 or chroma > 28:
+                non_quiet += 1
+                row_counts[index // sample.width] += 1
+                column_counts[index % sample.width] += 1
+        non_quiet_ratio = non_quiet / len(pixels)
+        max_row_ratio = max(row_counts, default=0) / max(sample.width, 1)
+        max_column_ratio = max(column_counts, default=0) / max(sample.height, 1)
+        block_contact_score = 0.0
+        if max_row_ratio >= 0.55 or max_column_ratio >= 0.55:
+            block_contact_score += 6.0
+        elif max_row_ratio >= 0.35 or max_column_ratio >= 0.35:
+            block_contact_score += 3.0
+        if non_quiet_ratio >= 0.15:
+            block_contact_score += 2.0
+        elif non_quiet_ratio >= 0.05:
+            block_contact_score += 0.8
+        return (
+            block_contact_score
+            + (non_quiet_ratio * 4.0)
+            + (max_row_ratio * 2.0)
+            + (max_column_ratio * 1.2)
+            + (min(variance ** 0.5, 128.0) / 128.0)
+        )
+
+    @staticmethod
+    def _logo_scale_candidates() -> list[float]:
+        return [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.45, 0.4, 0.35, 0.3]
+
+    @classmethod
+    def _resolve_logo_collision_guard(
+        cls,
+        *,
+        base_image: Image.Image,
+        logo_image: Image.Image,
+        logo_box: tuple[int, int, int, int],
+        content: ContentVersion,
+        explainability: dict,
+        format_name: str,
+        preferred_hint: str | None,
+    ) -> dict[str, object]:
+        canvas_width, canvas_height = base_image.size
+        initial_anchor = cls._logo_anchor_from_box(
+            logo_box,
+            canvas_width=canvas_width,
+            canvas_height=canvas_height,
+        )
+        anchors = cls._candidate_logo_anchors(
+            content=content,
+            explainability=explainability,
+            preferred_hint=preferred_hint or cls._logo_anchor_to_position(initial_anchor),
+        )
+        policy = cls._brand_logo_placement_policy_from_payloads(content, explainability)
+        allowed_anchor_keys = {
+            anchor
+            for position in (policy.get("allowed_positions") or [])
+            if (anchor := cls._logo_anchor_from_position(str(position)))
+        }
+        if allowed_anchor_keys and policy.get("explicit"):
+            for position in (
+                "top-right",
+                "top-left",
+                "bottom-right",
+                "bottom-left",
+                "top-center",
+                "bottom-center",
+                "center",
+            ):
+                anchor = cls._logo_anchor_from_position(position)
+                if anchor and anchor not in anchors:
+                    anchors.append(anchor)
+        preferred_anchor = anchors[0] if anchors else initial_anchor
+        obstruction_boxes = cls._logo_layout_obstruction_boxes(
+            content=content,
+            explainability=explainability,
+            canvas_width=canvas_width,
+            canvas_height=canvas_height,
+        )
+        _initial_x, _initial_y, initial_width, initial_height = logo_box
+        min_width = max(int(canvas_width * 0.055), 56)
+        min_height = max(int(canvas_height * 0.014), 18)
+        best: dict[str, object] | None = None
+        for anchor in anchors:
+            for scale in cls._logo_scale_candidates():
+                candidate_width = max(int(round(initial_width * scale)), min_width)
+                candidate_height = max(int(round(initial_height * scale)), min_height)
+                candidate_box = cls._snap_logo_box_to_anchor_edge(
+                    box=(0, 0, candidate_width, candidate_height),
+                    canvas_width=canvas_width,
+                    canvas_height=canvas_height,
+                    anchor=anchor,
+                )
+                inner_width = max(candidate_box[2] - max(int(candidate_box[2] * 0.01), 2), 1)
+                inner_height = max(candidate_box[3] - max(int(candidate_box[3] * 0.015), 2), 1)
+                contained = ImageOps.contain(
+                    logo_image,
+                    (inner_width, inner_height),
+                    method=Image.Resampling.LANCZOS,
+                )
+                anchor_label = cls._logo_anchor_to_position(anchor)
+                offset_x, offset_y = cls._logo_offset_in_box(
+                    box=candidate_box,
+                    logo_width=contained.width,
+                    logo_height=contained.height,
+                    anchor=anchor_label,
+                )
+                footprint = (offset_x, offset_y, contained.width, contained.height)
+                pad_x, pad_y = cls._logo_collision_padding(
+                    logo_width=contained.width,
+                    logo_height=contained.height,
+                    canvas_width=canvas_width,
+                    canvas_height=canvas_height,
+                )
+                safe_box = cls._expanded_box_with_padding(
+                    box=footprint,
+                    canvas_width=canvas_width,
+                    canvas_height=canvas_height,
+                    pad_x=pad_x,
+                    pad_y=pad_y,
+                )
+                layout_score = cls._layout_overlap_score(
+                    safe_box=safe_box,
+                    obstruction_boxes=obstruction_boxes,
+                )
+                image_score = cls._image_region_obstruction_score(base_image, safe_box)
+                preference_penalty = 0.0 if anchor == preferred_anchor else 0.35
+                size_penalty = (1.0 - scale) * 0.5
+                policy_override = bool(
+                    allowed_anchor_keys
+                    and policy.get("explicit")
+                    and anchor not in allowed_anchor_keys
+                )
+                policy_penalty = 8.0 if policy_override else 0.0
+                score = (
+                    (layout_score * 8.0)
+                    + (image_score * 4.0)
+                    + preference_penalty
+                    + size_penalty
+                    + policy_penalty
+                )
+                candidate = {
+                    "score": score,
+                    "layout_score": layout_score,
+                    "image_score": image_score,
+                    "scale": scale,
+                    "anchor": anchor_label,
+                    "policy_override": policy_override,
+                    "box": candidate_box,
+                    "footprint": footprint,
+                    "safe_box": safe_box,
+                    "contained": contained,
+                    "offset_x": offset_x,
+                    "offset_y": offset_y,
+                }
+                if best is None or score < float(best["score"]):
+                    best = candidate
+        if best is None:
+            contained = ImageOps.contain(
+                logo_image,
+                (max(logo_box[2], 1), max(logo_box[3], 1)),
+                method=Image.Resampling.LANCZOS,
+            )
+            anchor_label = cls._logo_anchor_to_position(initial_anchor)
+            offset_x, offset_y = cls._logo_offset_in_box(
+                box=logo_box,
+                logo_width=contained.width,
+                logo_height=contained.height,
+                anchor=anchor_label,
+            )
+            best = {
+                "score": 0.0,
+                "layout_score": 0.0,
+                "image_score": 0.0,
+                "scale": 1.0,
+                "anchor": anchor_label,
+                "policy_override": False,
+                "box": logo_box,
+                "footprint": (offset_x, offset_y, contained.width, contained.height),
+                "safe_box": (offset_x, offset_y, contained.width, contained.height),
+                "contained": contained,
+                "offset_x": offset_x,
+                "offset_y": offset_y,
+            }
+        return best
 
     @classmethod
     def _reference_ai_logo_box(
@@ -6444,7 +7174,18 @@ class ContentService:
                     anchor=anchor,
                     reference_box=reference_box,
                 )
-        return box
+        box = cls._cap_logo_box_to_profile(
+            box=box,
+            canvas_width=canvas_width,
+            canvas_height=canvas_height,
+            format_name=format_name,
+        )
+        return cls._snap_logo_box_to_anchor_edge(
+            box=box,
+            canvas_width=canvas_width,
+            canvas_height=canvas_height,
+            anchor=anchor,
+        )
 
     @classmethod
     def _resolve_ai_logo_box(
@@ -7589,12 +8330,20 @@ class ContentService:
             )
             return None
 
-        x, y, width, height = logo_box
-        inner_width = max(width - max(int(width * 0.01), 2), 1)
-        inner_height = max(height - max(int(height * 0.015), 2), 1)
-        contained = ImageOps.contain(logo, (inner_width, inner_height), method=Image.Resampling.LANCZOS)
-        offset_x = x + max((width - contained.width) // 2, 0)
-        offset_y = y + max((height - contained.height) // 2, 0)
+        collision_guard = self._resolve_logo_collision_guard(
+            base_image=base,
+            logo_image=logo,
+            logo_box=logo_box,
+            content=content,
+            explainability=explainability,
+            format_name=str((studio_panel or {}).get("format") or ""),
+            preferred_hint=self._extract_logo_position_hint(content, explainability),
+        )
+        logo_box = collision_guard["box"]  # type: ignore[assignment]
+        contained = collision_guard["contained"]  # type: ignore[assignment]
+        offset_x = int(collision_guard["offset_x"])
+        offset_y = int(collision_guard["offset_y"])
+        logo_clearance_anchor = str(collision_guard["anchor"])
         compact_clearance_box = self._logo_footprint_clearance_box(
             image=base,
             offset_x=offset_x,
@@ -7640,6 +8389,27 @@ class ContentService:
                 "logo_clearance_zone_applied": logo_clearance_zone_applied,
                 "logo_clearance_anchor": logo_clearance_anchor,
                 "logo_clearance_strategy": "footprint_masked_top_band_patch" if logo_clearance_anchor.startswith("top-") else "footprint_masked_context_patch_or_fill",
+                "logo_collision_guard": {
+                    "applied": True,
+                    "score": round(float(collision_guard.get("score", 0.0)), 4),
+                    "layout_score": round(float(collision_guard.get("layout_score", 0.0)), 4),
+                    "image_score": round(float(collision_guard.get("image_score", 0.0)), 4),
+                    "scale": collision_guard.get("scale"),
+                    "anchor": collision_guard.get("anchor"),
+                    "policy_override": bool(collision_guard.get("policy_override")),
+                    "footprint": {
+                        "x": int((collision_guard.get("footprint") or (0, 0, 0, 0))[0]),
+                        "y": int((collision_guard.get("footprint") or (0, 0, 0, 0))[1]),
+                        "width": int((collision_guard.get("footprint") or (0, 0, 0, 0))[2]),
+                        "height": int((collision_guard.get("footprint") or (0, 0, 0, 0))[3]),
+                    },
+                    "safe_box": {
+                        "x": int((collision_guard.get("safe_box") or (0, 0, 0, 0))[0]),
+                        "y": int((collision_guard.get("safe_box") or (0, 0, 0, 0))[1]),
+                        "width": int((collision_guard.get("safe_box") or (0, 0, 0, 0))[2]),
+                        "height": int((collision_guard.get("safe_box") or (0, 0, 0, 0))[3]),
+                    },
+                },
                 "logo_clearance_box": {
                     "x": compact_clearance_box[0],
                     "y": compact_clearance_box[1],
@@ -8454,6 +9224,9 @@ class ContentService:
             template_context=template_context,
             planning_hints=planning_hints,
             content_version=content_version,
+        await self._run_ragas_evaluation_after_generation(
+            trace_id,
+            generated_image_count=len(persisted_final_render_assets) or len(response.image_assets),
         )
         return content_version
 

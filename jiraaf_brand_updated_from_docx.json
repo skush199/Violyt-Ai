@@ -1,0 +1,228 @@
+{
+  "Brand_Details": {
+    "Upload_Brand_Logo": "",
+    "Brand_Name": "Jiraaf",
+    "Brand_Description": "Jiraaf is a SEBI-licensed digital platform that enables retail investors to access curated fixed-income investment opportunities (bonds) through a simple, transparent, and regulated experience.",
+    "Industry_Category": "Financial Services / Fixed Income Investments / WealthTech",
+    "Business_Type": "B2C (Primary) / B2B2C (Secondary via partnerships)",
+    "Offering_Type": "Investment Platform (Digital Marketplace for Bonds)",
+    "Key_Differentiators": [
+      "SEBI-licensed and regulated bond investment platform",
+      "Curated fixed-income products based on risk appetite",
+      "Strong due diligence with credit-rated instruments",
+      "Predictable income through fixed repayment structures",
+      "Retail accessibility with small-ticket investments",
+      "Simplified, transparent presentation of complex financial products",
+      "Education-led approach to bond investing",
+      "Digital-first, easy-to-use platform"
+    ]
+  },
+  "Tone_Attributes": {
+    "Core_Tone_Attributes": {
+      "Bold": 25,
+      "Premium": 20,
+      "Playful": 25,
+      "Authoritative": 75,
+      "Empathetic": 70,
+      "Inspirational": 50,
+      "TrustWorthy": 85,
+      "Polite": 40,
+      "Witty": 60
+    },
+    "Primary_Emotion": "Trust",
+    "Secondary_Emotion": "Security",
+    "Avoided_Emotion": "Fear",
+    "Content_Complexity": "Low–Medium",
+    "Sentence_Length": "Short–Medium",
+    "Perspective": ""
+  },
+  "Target_Audience": {
+    "Select_Target_Audience": [
+      "Retail Investors (Primary)",
+      "Working Professionals",
+      "Emerging Affluent Individuals",
+      "Founders / CXOs (Secondary investors)"
+    ],
+    "Psychographic_Details": {
+      "Goals": "Build stable wealth; Diversify beyond traditional savings (FDs, savings accounts); Generate predictable income",
+      "Motivation": "Better returns than traditional instruments; Clarity and control over investments; Reduced volatility vs equity",
+      "Fears_and_Pain_Points": "Lack of understanding of bonds; Perception that bonds are complex or inaccessible; Fear of risk due to lack of knowledge",
+      "Objections": "“Are bonds safe?”; “How do I evaluate these products?”; “Is this suitable for me?”",
+      "Content_Consumption_Behavior": "Edutainment-first (Reels, Carousels); FAQs, explainers, bite-sized finance content; Webinars, podcasts"
+    },
+    "Upload_Audience_Insights": [],
+    "Demographic_Details": {
+      "Audience_Type": "Retail investors",
+      "Age_Range": "",
+      "Gender": "",
+      "Location": "India (Urban focus)",
+      "Education_Level": "",
+      "Employment_Status": "Working professionals, self-employed",
+      "Professional_Background": "Financially aware, digitally active individuals",
+      "Household_Size": "",
+      "Language_Preference": "English (primary), Hinglish (select content)",
+      "Income_Level": "",
+      "Family_Status or Life_Stage": "Early to mid-career wealth builders",
+      "Socio-economic_Segment": "Urban middle class & emerging affluent",
+      "Digital_Access": "High"
+    }
+  },
+  "Visual_Identity_Training": {
+    "Brand_Mood": "Trustworthy, optimistic, approachable, stable, modern",
+    "Visual_Style": "Clean, structured, infographic-led, mascot-supported storytelling",
+    "Reference_creatives": [],
+    "Mood_boards": [],
+    "Brand_Color_Palette(HEX)": {
+      "Primary_color": {
+        "name": "Regal Blue",
+        "hex": "#003975"
+      },
+      "Secondary_color": {
+        "name": "Orange Peel",
+        "hex": "#FFA400"
+      },
+      "Additional_colors": [
+        {
+          "name": "Pastel Heart",
+          "hex": "#FFCBCB"
+        },
+        {
+          "name": "Caribbean Green",
+          "hex": "#00CB91"
+        }
+      ]
+    },
+    "Upload_Color_Palette": [],
+    "Typography": {
+      "Primary_Font": "Roboto Condensed",
+      "Secondary_Font": "Roboto"
+    },
+    "Upload_Font_Style_Guide": []
+  },
+  "Rules": {
+    "Set_The_Rules.Violyt_Will_Follow_Them.": [
+      "Avoid emojis",
+      "Avoid hype or exaggerated claims",
+      "Avoid slang",
+      "Avoid competitor comparisons"
+    ],
+    "Brand_Word_Banks": {
+      "Positive_Word_Bank": [
+        "trustworthy",
+        "secure",
+        "simple",
+        "clear",
+        "transparent",
+        "diversify",
+        "understandable",
+        "approachable",
+        "confidence"
+      ],
+      "Upload_Positive_Word_Bank": [],
+      "Replaceable_Words": {
+        "risk-free": "lower-risk / relatively stable / curated by risk appetite",
+        "guaranteed returns": "predictable repayments / fixed-income opportunities",
+        "get rich quick": "long-term wealth creation",
+        "best investment": "suitable investment option",
+        "instant wealth": "steady wealth building"
+      },
+      "Upload_Replaceable_Words": [],
+      "Negative_Word_Bank": [
+        "cheesy",
+        "confusing",
+        "overly complex",
+        "fear-based",
+        "pushy",
+        "scammy"
+      ],
+      "Upload_Negative_Word_Bank": []
+    },
+    "Custom_Rules": {
+      "What_To_Do": [
+        "Keep communication customer-first and educational",
+        "Simplify financial concepts into easy explanations",
+        "Maintain trust + clarity at all times",
+        "Use structured, visual storytelling (carousels, reels)",
+        "Leverage mascot-driven explainers where relevant"
+      ],
+      "What_NOT_To_Do": [
+        "Avoid complexity or jargon without explanation",
+        "Avoid fear-based or urgency-driven selling",
+        "Avoid positioning bonds as elite or inaccessible",
+        "Avoid over-promising returns"
+      ]
+    },
+    "Forbidden_Prompt_Patterns": {
+      "Restricted_Topics": [],
+      "Restricted_Claims": [
+        "guaranteed returns",
+        "risk-free",
+        "high returns",
+        "over-promising returns"
+      ],
+      "Blocked_Words/Phrases": [
+        "risk-free",
+        "guaranteed returns",
+        "get rich quick",
+        "best investment",
+        "instant wealth"
+      ]
+    }
+  },
+  "Documentation": {
+    "Template": [],
+    "Other_documentation": []
+  },
+  "Advanced": {
+    "Brand_Purpose_and_Positioning": {
+      "Brand_Mission": "Make fixed-income investing accessible and understandable",
+      "Brand_Vision": "Democratize bond investing in India",
+      "Brand_Promise": "Curated, transparent, regulated investment opportunities",
+      "Market_Positioning": "Digital-first, approachable fixed-income investment platform simplifying bond investing for retail investors",
+      "Role_of_Digital_Platforms": {},
+      "Social_Media_Challenges": []
+    },
+    "Strategic_Block": {
+      "Business_Problem_or_Opportunity": "",
+      "Perception_Challenge": "",
+      "Human_Insight": "",
+      "Brand_Advantage": "",
+      "Strategy": [
+        "Position as an approachable expert in bonds",
+        "Lead with education-first content strategy",
+        "Build trust through clarity, not claims",
+        "Drive adoption via simplification of finance"
+      ],
+      "Hashtags": [
+        "#ReachForMore",
+        "#JustAskJiraaf"
+      ]
+    },
+    "Industry_and_Context_Parameters": {
+      "Market_Maturity": "",
+      "Brand_Archetype": "",
+      "Buying_Stage": "",
+      "Compliance_Level": ""
+    },
+    "Competitor_Brands": [],
+    "Non_Negotiable_Brand_Truths": [
+      "Jiraaf = regulated, trustworthy bond platform",
+      "Always simplify — never sound like a financial textbook",
+      "Must educate before selling",
+      "Bonds = predictable, structured income (not “high returns”)",
+      "Never use “guaranteed” or “risk-free” language",
+      "Always sound approachable, not intimidating"
+    ],
+    "LLM_Ultra_Condensed_Training_Layer": [
+      "SEBI-licensed bond platform",
+      "Fixed-income investing for retail",
+      "Curated, credit-rated products",
+      "Predictable repayments",
+      "Simple, transparent experience",
+      "Education-led communication",
+      "Low–medium complexity language",
+      "Trust + security driven",
+      "Accessible investing"
+    ]
+  }
+}

@@ -1,11 +1,12 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { CalendarDays } from "lucide-react";
+import { CalendarDays, Trash2 } from "lucide-react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { toast } from "@/components/ui/use-toast";
 import {
     DatePill,
     PlatformPageTitle,
@@ -14,7 +15,7 @@ import {
     ToolbarToggle,
 } from "@/components/platformOwner/PlatformOwnerPrimitives";
 import { useGetTenantBrandSpaces, useGetTenantData, useGetTenantUsageSummary, useGetTenantUsers } from "@/hooks/tenantAdmins/useGetTenants";
-import { useUpdateTenantAdmin } from "@/hooks/tenantAdmins/useUpdateTenant";
+import { useDeleteTenantAdmin, useUpdateTenantAdmin } from "@/hooks/tenantAdmins/useUpdateTenant";
 import {
     buildRangeLabel,
     buildUsageWindowRows,
@@ -37,6 +38,7 @@ export default function TenantDetailsPage() {
     const { data: usage } = useGetTenantUsageSummary(tenantId);
     const { data: brandSpaces } = useGetTenantBrandSpaces(tenantId);
     const { mutate: updateTenant, isPending: isUpdatingTenant } = useUpdateTenantAdmin();
+    const { mutateAsync: deleteTenant, isPending: isDeletingTenant } = useDeleteTenantAdmin();
     const [tab, setTab] = useState("tenant");
     const [provider, setProvider] = useState("openai");
     const [selectedUsageMonth, setSelectedUsageMonth] = useState("");
@@ -361,6 +363,28 @@ export default function TenantDetailsPage() {
         };
     })();
 
+    const handleDeleteTenant = async () => {
+        if (!tenant) {
+            return;
+        }
+
+        if (!window.confirm(`Delete "${tenant.name}"? This will permanently remove the tenant and related data.`)) {
+            return;
+        }
+
+        try {
+            await deleteTenant(tenantId);
+            toast({ title: "Tenant deleted" });
+            router.push("/tenants");
+        } catch (error) {
+            toast({
+                title: "Unable to delete this tenant right now.",
+                description: error instanceof Error ? error.message : "Please try again.",
+                variant: "destructive",
+            });
+        }
+    };
+
     if (isLoading || !tenant) {
         return <div className="p-5 text-sm text-slate-500">Loading tenant details...</div>;
     }
@@ -395,6 +419,15 @@ export default function TenantDetailsPage() {
                             <Image src={"/actions_icons/deactivate_user.svg"} alt="Edit" width={16} height={16} className="w-auto h-auto" />
 
                             {tenant.is_active ? "Deactivate" : "Reactivate"}
+                        </Button>
+                        <Button
+                            variant="outline"
+                            className="rounded-none border-[#FFB4AA] bg-[#FF6D5E] px-5 py-5 text-base text-white hover:bg-[#F35F50] hover:text-white"
+                            disabled={isDeletingTenant}
+                            onClick={handleDeleteTenant}
+                        >
+                            <Trash2 className="h-4 w-4" />
+                            Delete
                         </Button>
                     </div>
                 }

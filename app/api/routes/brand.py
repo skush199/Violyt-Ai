@@ -1,6 +1,7 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import CurrentPrincipal, assert_brand_access, forbid_super_admin_brand_access, get_current_principal
@@ -89,7 +90,14 @@ async def upsert_section(
 ) -> BrandResponse:
     forbid_super_admin_brand_access(principal)
     assert_brand_access(principal, brand_id)
-    request = BrandSectionUpsertRequest(section_code=section_code, payload=payload.payload, completion_percent=payload.completion_percent)
+    try:
+        request = BrandSectionUpsertRequest(
+            section_code=section_code,
+            payload=payload.payload,
+            completion_percent=payload.completion_percent,
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
     brand = await BrandSpaceService(session).upsert_section(principal.tenant_id, brand_id, request)
     return BrandResponse.model_validate(brand)
 
