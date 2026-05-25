@@ -7821,6 +7821,69 @@ class ContentService:
         )
         brand_usage_writer(trace_id, brand_usage_report)
 
+    def _write_visual_generation_readable_trace(
+        self,
+        *,
+        trace_id: str | None,
+        effective_prompt: str,
+        payload: ContentGenerateRequest,
+        effective_generate_image: bool,
+        runtime_brand_context: dict[str, Any],
+        persona: Any,
+        objective: Any,
+        reference_assets: list[dict[str, Any]],
+        template_recommendations: list[Any],
+        template_context: dict[str, Any],
+        planning_hints: dict[str, Any],
+        content_version: ContentVersion,
+    ) -> None:
+        readable_bundle_builder = getattr(self.trace, "build_visual_generation_readable_bundle", None)
+        readable_bundle_writer = getattr(self.trace, "write_visual_generation_readable_bundle", None)
+        if not (callable(readable_bundle_builder) and callable(readable_bundle_writer) and trace_id):
+            return
+        studio_panel = payload.studio_panel.model_dump()
+        format_name = str(studio_panel.get("format") or "").strip().lower()
+        if not effective_generate_image or format_name not in {"static", "infographic", "carousel"}:
+            return
+        explainability = (
+            content_version.explainability_metadata
+            if isinstance(content_version.explainability_metadata, dict)
+            else {}
+        )
+        request_payload = {
+            "prompt": payload.prompt,
+            "raw_user_prompt": payload.raw_user_prompt,
+            "rewrite_instruction": payload.rewrite_instruction,
+            "persona_id": str(payload.persona_id) if payload.persona_id else None,
+            "objective_id": str(payload.objective_id) if payload.objective_id else None,
+            "template_id": str(payload.template_id) if payload.template_id else None,
+            "request_mode": payload.request_mode,
+            "source_content_version_id": str(payload.source_content_version_id) if payload.source_content_version_id else None,
+            "reference_asset_ids": [str(item) for item in payload.reference_asset_ids],
+            "generate_image": effective_generate_image,
+            "inheritance_policy": payload.inheritance_policy.model_dump(mode="json"),
+        }
+        readable_bundle = readable_bundle_builder(
+            trace_id=trace_id,
+            prompt=effective_prompt,
+            studio_panel=studio_panel,
+            request_payload=request_payload,
+            runtime_brand_context=runtime_brand_context,
+            persona_context=BrandIntelligenceService.persona_to_dict(persona),
+            objective_context=BrandIntelligenceService.objective_to_dict(objective),
+            reference_assets=reference_assets,
+            template_candidates=[
+                recommendation.model_dump(mode="json") if hasattr(recommendation, "model_dump") else dict(recommendation)
+                for recommendation in template_recommendations
+            ],
+            template_context=template_context,
+            planning_hints=planning_hints,
+            generated_payload=content_version.generated_payload if isinstance(content_version.generated_payload, dict) else {},
+            blueprint_payload=content_version.blueprint_payload if isinstance(content_version.blueprint_payload, dict) else {},
+            explainability=explainability,
+        )
+        readable_bundle_writer(trace_id, readable_bundle)
+
     async def generate(
         self,
         tenant_id: UUID,
@@ -8377,6 +8440,20 @@ class ContentService:
             template=template,
             logo_candidates=logo_candidates,
             logo_selection=logo_selection,
+        )
+        self._write_visual_generation_readable_trace(
+            trace_id=trace_id,
+            effective_prompt=effective_prompt,
+            payload=payload,
+            effective_generate_image=effective_generate_image,
+            runtime_brand_context=runtime_brand_context,
+            persona=persona,
+            objective=objective,
+            reference_assets=reference_assets,
+            template_recommendations=template_recommendations,
+            template_context=template_context,
+            planning_hints=planning_hints,
+            content_version=content_version,
         )
         return content_version
 
