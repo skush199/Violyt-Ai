@@ -23,31 +23,64 @@ class OpenAITextProvider(TextGenerationProvider):
         self.settings = get_settings()
         self.client = OpenAI(api_key=self.settings.openai_api_key) if self.settings.openai_api_key else None
 
+    def _supports_responses_api(self) -> bool:
+        return bool(self.client and getattr(self.client, "responses", None))
+
+    def _chat_completion_text(self, *, system: str, user: str) -> str:
+        if not self.client:
+            return ""
+        response = self.client.chat.completions.create(
+            model=self.settings.tone_model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        )
+        return (response.choices[0].message.content or "").strip() if getattr(response, "choices", None) else ""
+
+    def _chat_completion_json(self, *, system: str, user: str) -> str:
+        if not self.client:
+            return ""
+        response = self.client.chat.completions.create(
+            model=self.settings.llm_model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            response_format={"type": "json_object"},
+        )
+        return (response.choices[0].message.content or "").strip() if getattr(response, "choices", None) else ""
+
     def generate_structured_json(self, envelope: PromptEnvelope, fallback: dict[str, Any]) -> dict[str, Any]:
         if not self.client:
             return fallback
-        response = self.client.responses.create(
-            model=self.settings.llm_model,
-            input=[
-                {"role": "system", "content": envelope.system},
-                {"role": "user", "content": envelope.user},
-            ],
-            text={"format": {"type": "json_object"}},
-        )
-        text = response.output_text or json.dumps(fallback)
+        if self._supports_responses_api():
+            response = self.client.responses.create(
+                model=self.settings.llm_model,
+                input=[
+                    {"role": "system", "content": envelope.system},
+                    {"role": "user", "content": envelope.user},
+                ],
+                text={"format": {"type": "json_object"}},
+            )
+            text = response.output_text or json.dumps(fallback)
+        else:
+            text = self._chat_completion_json(system=envelope.system, user=envelope.user) or json.dumps(fallback)
         return json.loads(text)
 
     def generate_text(self, envelope: PromptEnvelope, fallback: str) -> str:
         if not self.client:
             return fallback
-        response = self.client.responses.create(
-            model=self.settings.tone_model,
-            input=[
-                {"role": "system", "content": envelope.system},
-                {"role": "user", "content": envelope.user},
-            ],
-        )
-        return response.output_text or fallback
+        if self._supports_responses_api():
+            response = self.client.responses.create(
+                model=self.settings.tone_model,
+                input=[
+                    {"role": "system", "content": envelope.system},
+                    {"role": "user", "content": envelope.user},
+                ],
+            )
+            return response.output_text or fallback
+        return self._chat_completion_text(system=envelope.system, user=envelope.user) or fallback
 
 
 class OpenAIImageProvider(ImageGenerationBackend):
