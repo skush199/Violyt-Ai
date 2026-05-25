@@ -232,6 +232,22 @@ class ContentService:
         self.storage = LocalObjectStorage()
 
     @staticmethod
+    def _run_ragas_evaluation_for_trace(trace_id: str) -> None:
+        from scripts.ragas_evaluation import DEFAULT_OUTPUT_DIR, DEFAULT_TRACE_ROOT, evaluate_traces
+
+        evaluate_traces(DEFAULT_TRACE_ROOT, DEFAULT_OUTPUT_DIR, trace_id)
+
+    async def _run_ragas_evaluation_after_generation(self, trace_id: str | None, *, generated_image_count: int) -> None:
+        if not trace_id or generated_image_count <= 0:
+            return
+
+        try:
+            await asyncio.to_thread(self._run_ragas_evaluation_for_trace, trace_id)
+            logger.info("content.generate.ragas_evaluation_complete trace_id=%s", trace_id)
+        except Exception:
+            logger.exception("content.generate.ragas_evaluation_failed trace_id=%s", trace_id)
+
+    @staticmethod
     def _merge_studio_panel(base: dict | None, override: dict | None) -> dict:
         merged = deepcopy(base or {})
         if not override:
@@ -8377,6 +8393,10 @@ class ContentService:
             template=template,
             logo_candidates=logo_candidates,
             logo_selection=logo_selection,
+        )
+        await self._run_ragas_evaluation_after_generation(
+            trace_id,
+            generated_image_count=len(persisted_final_render_assets) or len(response.image_assets),
         )
         return content_version
 
