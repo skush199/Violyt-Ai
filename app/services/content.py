@@ -49,6 +49,7 @@ from app.repositories.knowledge import KnowledgeAssetRepository, TemplateMetadat
 from app.schemas.content import ContentGenerateRequest, ContentRewriteRequest, ToneCheckRequest
 from app.services.artifact_state import ArtifactStateService
 from app.services.asset_delivery import AssetDeliveryService
+from app.services.brand_scoring import BrandScoringService
 from app.services.content_planning import ContentPlanningService
 from app.services.content_format_guide import ContentFormatGuideService
 from app.services.knowledge import KnowledgeService
@@ -229,6 +230,7 @@ class ContentService:
         self.visual_planning = VisualPlanningService()
         self.artifacts = ArtifactStateService()
         self.trace = GenerationTraceService()
+        self.brand_scoring = BrandScoringService(session)
         self.storage = LocalObjectStorage()
 
     @staticmethod
@@ -8595,16 +8597,22 @@ class ContentService:
         self,
         *,
         trace_id: str | None,
+        tenant_id: UUID,
+        brand_space_id: UUID,
         effective_prompt: str,
         payload: ContentGenerateRequest,
         effective_generate_image: bool,
+        context_sections: list[Any],
         runtime_brand_context: dict[str, Any],
         persona: Any,
         objective: Any,
         reference_assets: list[dict[str, Any]],
         template_recommendations: list[Any],
         template_context: dict[str, Any],
+        retrieved_knowledge: dict[str, list[dict[str, Any]]],
         planning_hints: dict[str, Any],
+        logo_candidates: list[dict[str, Any]],
+        logo_selection: dict[str, Any] | None,
         content_version: ContentVersion,
     ) -> None:
         readable_bundle_builder = getattr(self.trace, "build_visual_generation_readable_bundle", None)
@@ -8633,11 +8641,19 @@ class ContentService:
             "generate_image": effective_generate_image,
             "inheritance_policy": payload.inheritance_policy.model_dump(mode="json"),
         }
+        section_payloads = {
+            str(getattr(section, "section_code", "")).strip(): dict(getattr(section, "payload", {}) or {})
+            for section in context_sections
+            if str(getattr(section, "section_code", "")).strip() and isinstance(getattr(section, "payload", None), dict)
+        }
         readable_bundle = readable_bundle_builder(
             trace_id=trace_id,
             prompt=effective_prompt,
+            tenant_id=tenant_id,
+            brand_space_id=brand_space_id,
             studio_panel=studio_panel,
             request_payload=request_payload,
+            section_payloads=section_payloads,
             runtime_brand_context=runtime_brand_context,
             persona_context=BrandIntelligenceService.persona_to_dict(persona),
             objective_context=BrandIntelligenceService.objective_to_dict(objective),
@@ -8647,12 +8663,97 @@ class ContentService:
                 for recommendation in template_recommendations
             ],
             template_context=template_context,
+            retrieved_knowledge=retrieved_knowledge,
             planning_hints=planning_hints,
+            logo_candidates=logo_candidates,
+            logo_selection=logo_selection,
             generated_payload=content_version.generated_payload if isinstance(content_version.generated_payload, dict) else {},
             blueprint_payload=content_version.blueprint_payload if isinstance(content_version.blueprint_payload, dict) else {},
             explainability=explainability,
         )
         readable_bundle_writer(trace_id, readable_bundle)
+
+    def _write_brand_scoring_output(
+        self,
+        *,
+        trace_id: str | None,
+        prompt: str,
+        studio_panel: dict[str, Any],
+        brand_context: dict[str, Any],
+        persona_context: dict[str, Any],
+        objective_context: dict[str, Any],
+        content_version: ContentVersion,
+        output_assets: list[dict[str, Any]],
+        reference_assets: list[dict[str, Any]] | None = None,
+    ) -> None:
+        if not output_assets:
+            return
+        explainability = (
+            content_version.explainability_metadata
+            if isinstance(content_version.explainability_metadata, dict)
+            else {}
+        )
+        try:
+            scorecard = self.brand_scoring.build_scorecard(
+                prompt=prompt,
+                studio_panel=studio_panel,
+                generated_payload=content_version.generated_payload if isinstance(content_version.generated_payload, dict) else {},
+                brand_context=brand_context,
+                persona_context=persona_context,
+                objective_context=objective_context,
+                explainability=explainability,
+                output_assets=output_assets,
+                reference_assets=reference_assets,
+            )
+            output_id = str(content_version.id or trace_id or uuid4())
+            storage_path = self.brand_scoring.save_scorecard(
+                output_id=output_id,
+                scorecard=scorecard,
+            )
+            content_version.explainability_metadata = {
+                **explainability,
+                "brand_scoring": {
+                    **scorecard,
+                    "storage_path": storage_path,
+                },
+            }
+            self.trace.write_payload(
+                trace_id,
+                "brand_scoring",
+                {
+                    "storage_path": storage_path,
+                    "scorecard": scorecard,
+                },
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "content.brand_scoring.failed trace_id=%s content_version_id=%s",
+                trace_id,
+                getattr(content_version, "id", None),
+            )
+
+    @staticmethod
+    def _scoring_assets_from_explainability(explainability: dict[str, Any]) -> list[dict[str, Any]]:
+        assets = explainability.get("final_render_assets") if isinstance(explainability.get("final_render_assets"), list) else []
+        normalized: list[dict[str, Any]] = []
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            storage_path = str(asset.get("storage_path") or "").strip()
+            mime_type = str(asset.get("mime_type") or "").strip()
+            if not storage_path or not mime_type:
+                continue
+            normalized.append(
+                {
+                    "asset_id": str(asset.get("asset_id") or uuid4()),
+                    "mime_type": mime_type,
+                    "storage_path": storage_path,
+                    "asset_role": str(asset.get("asset_role") or "render_preview"),
+                    "metadata": asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {},
+                    "asset_kind": "image",
+                }
+            )
+        return normalized
 
     async def generate(
         self,
@@ -9175,6 +9276,29 @@ class ContentService:
                 )
             )
 
+        score_output_assets = [
+            {
+                "asset_id": str(asset.asset_id),
+                "mime_type": asset.mime_type,
+                "storage_path": asset.storage_path,
+                "asset_role": asset.asset_role,
+                "metadata": asset.metadata or {},
+                "asset_kind": "image",
+            }
+            for asset in (persisted_final_render_assets or response.image_assets)
+        ]
+        self._write_brand_scoring_output(
+            trace_id=trace_id,
+            prompt=effective_prompt,
+            studio_panel=payload.studio_panel.model_dump(),
+            brand_context=runtime_brand_context,
+            persona_context=BrandIntelligenceService.persona_to_dict(persona),
+            objective_context=BrandIntelligenceService.objective_to_dict(objective),
+            content_version=content_version,
+            output_assets=score_output_assets,
+            reference_assets=reference_assets,
+        )
+
         await self._record_session_context(session, payload, content_version)
         await self.usage.increment(tenant_id, UsageMetricCode.CONTENT_GENERATIONS)
         if response.image_assets:
@@ -9213,17 +9337,23 @@ class ContentService:
         )
         self._write_visual_generation_readable_trace(
             trace_id=trace_id,
+            tenant_id=tenant_id,
+            brand_space_id=brand_space_id,
             effective_prompt=effective_prompt,
             payload=payload,
             effective_generate_image=effective_generate_image,
+            context_sections=context["sections"],
             runtime_brand_context=runtime_brand_context,
             persona=persona,
             objective=objective,
             reference_assets=reference_assets,
             template_recommendations=template_recommendations,
             template_context=template_context,
+            retrieved_knowledge=retrieved_knowledge,
             planning_hints=planning_hints,
-            content_version=content_version,
+            logo_candidates=logo_candidates,
+            logo_selection=logo_selection,
+            content_version=content_version,)
         await self._run_ragas_evaluation_after_generation(
             trace_id,
             generated_image_count=len(persisted_final_render_assets) or len(response.image_assets),
@@ -9537,6 +9667,18 @@ class ContentService:
             tenant_id=tenant_id,
             brand_space_id=brand_space_id,
             content=rewritten,
+        )
+        self._write_brand_scoring_output(
+            trace_id=str(rewritten.explainability_metadata.get("generation_trace_id") or "").strip() or None,
+            prompt=payload.rewrite_instruction,
+            studio_panel=studio_panel,
+            brand_context=resolved_brand_context,
+            persona_context=persona_context,
+            objective_context=objective_context,
+            content_version=rewritten,
+            output_assets=self._scoring_assets_from_explainability(
+                rewritten.explainability_metadata if isinstance(rewritten.explainability_metadata, dict) else {}
+            ),
         )
         await self.usage.increment(tenant_id, UsageMetricCode.CONTENT_GENERATIONS)
         await self.session.commit()
