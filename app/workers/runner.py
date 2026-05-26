@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 import os
+from pathlib import Path
 import socket
 from uuid import uuid4
 
@@ -17,6 +18,22 @@ from app.services.template import TemplateService
 
 def _build_worker_id() -> str:
     return f"{socket.gethostname()}:{os.getpid()}:{uuid4().hex[:8]}"
+
+
+def _run_ragas_evaluation(trace_id: str) -> dict[str, str]:
+    from scripts.ragas_evaluation import evaluate_traces
+
+    settings = get_settings()
+    trace_root = Path(settings.generation_trace_base_path)
+    output_root = Path(settings.object_storage_base_path) / "ragas_evaluation"
+    result = evaluate_traces(trace_root, output_root, trace_id)
+    output_dir = output_root / trace_id
+    return {
+        "trace_id": trace_id,
+        "output_dir": str(output_dir),
+        "output": str(output_dir / "ragas_evaluation.json"),
+        "evaluator": str(result.get("evaluator") or ""),
+    }
 
 
 async def _heartbeat_loop(job_id, worker_id: str, stop: asyncio.Event) -> None:
@@ -57,6 +74,17 @@ async def handle_job(job_id, worker_id: str):
                     job.id,
                     JobStatus.SUCCEEDED,
                     {"template_id": str(template.id)},
+                    worker_id=worker_id,
+                )
+            elif job.job_type == JobType.RAGAS_EVALUATION:
+                trace_id = str((job.payload or {}).get("trace_id") or "").strip()
+                if not trace_id:
+                    raise ValueError("RAGAS evaluation job missing trace_id")
+                result = await asyncio.to_thread(_run_ragas_evaluation, trace_id)
+                await jobs.set_status(
+                    job.id,
+                    JobStatus.SUCCEEDED,
+                    result,
                     worker_id=worker_id,
                 )
             else:
