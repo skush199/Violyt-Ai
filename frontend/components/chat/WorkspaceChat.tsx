@@ -24,6 +24,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { PageHeading, SurfaceCard, UsageRing } from "@/components/common/DesignPrimitives";
 import type {
   AssetReference,
+  BrandScoringPayload,
   ChatAssistantStructuredPayload,
   GenerationDecision,
   KnowledgeAssetResponse,
@@ -194,6 +195,55 @@ function resolveGenerationDecision(payload: ChatAssistantStructuredPayload | Rec
       ? (typedPayload.renderer_metadata as Record<string, unknown>)
       : null;
   return coerceGenerationDecision(typedPayload.generation_decision || rendererMetadata?.layout_decision);
+}
+
+function resolveBrandScoring(payload: ChatAssistantStructuredPayload | Record<string, unknown> | undefined) {
+  if (!payload || Array.isArray(payload)) {
+    return null;
+  }
+  const typedPayload = payload as ChatAssistantStructuredPayload;
+  const scoring = typedPayload.brand_scoring;
+  if (
+    !scoring ||
+    typeof scoring.overall_score !== "number" ||
+    typeof scoring.score_breakdown?.on_brand !== "number" ||
+    typeof scoring.score_breakdown?.prompt_adherence !== "number" ||
+    typeof scoring.score_breakdown?.relevance !== "number"
+  ) {
+    return null;
+  }
+  return scoring;
+}
+
+function ScorePill({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-[18px] border border-slate-200 bg-slate-50 px-4 py-3">
+      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{label}</p>
+      <p className="mt-2 text-2xl font-semibold text-slate-900">{Math.round(value)}</p>
+    </div>
+  );
+}
+
+function BrandScoringCard({ scoring }: { scoring: BrandScoringPayload }) {
+  return (
+    <div className="mt-4 rounded-[24px] border border-slate-200 bg-white px-5 py-5 shadow-[0_16px_36px_-30px_rgba(15,23,42,0.35)]">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Brand Evaluation</p>
+          <h3 className="mt-1 text-lg font-semibold text-slate-900">Score Summary</h3>
+        </div>
+        <div className="rounded-[18px] bg-[#EEF2FF] px-4 py-3 text-right">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Overall</p>
+          <p className="mt-1 text-3xl font-semibold text-slate-900">{Math.round(scoring.overall_score)}</p>
+        </div>
+      </div>
+      <div className="mt-4 grid gap-3 sm:grid-cols-3">
+        <ScorePill label="On-Brand" value={scoring.score_breakdown.on_brand} />
+        <ScorePill label="Prompt Adherence" value={scoring.score_breakdown.prompt_adherence} />
+        <ScorePill label="Relevance" value={scoring.score_breakdown.relevance} />
+      </div>
+    </div>
+  );
 }
 
 function assetPreviewLabel(asset: KnowledgeAssetResponse) {
@@ -945,6 +995,7 @@ export default function WorkspaceChat({ brandKey }: WorkspaceChatProps) {
                       const previewAssets = message.role === "assistant" ? resolveGeneratedImageAssets(message.structured_payload) : [];
                       const previewUrl = previewAssets[0]?.asset_url || undefined;
                       const generationDecision = message.role === "assistant" ? resolveGenerationDecision(message.structured_payload) : null;
+                      const brandScoring = message.role === "assistant" ? resolveBrandScoring(message.structured_payload) : null;
                       const imageStatus =
                         message.role === "assistant" &&
                         !previewUrl &&
@@ -1001,6 +1052,7 @@ export default function WorkspaceChat({ brandKey }: WorkspaceChatProps) {
                               )}
                             </div>
                           ) : null}
+                          {brandScoring ? <BrandScoringCard scoring={brandScoring} /> : null}
                           {imageStatus === "not_generated" ? <p className="mt-3 text-sm text-slate-500">Image generation was requested, but no generated image asset was returned for this message.</p> : null}
                         </div>
                       );

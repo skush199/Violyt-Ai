@@ -3225,15 +3225,21 @@ class GenerationTraceService:
         *,
         trace_id: str,
         prompt: str,
+        tenant_id: Any,
+        brand_space_id: Any,
         studio_panel: dict[str, Any],
         request_payload: dict[str, Any],
+        section_payloads: dict[str, Any],
         runtime_brand_context: dict[str, Any],
         persona_context: dict[str, Any],
         objective_context: dict[str, Any],
         reference_assets: list[dict[str, Any]],
         template_candidates: list[dict[str, Any]],
         template_context: dict[str, Any],
+        retrieved_knowledge: dict[str, list[dict[str, Any]]],
         planning_hints: dict[str, Any],
+        logo_candidates: list[dict[str, Any]],
+        logo_selection: dict[str, Any] | None,
         generated_payload: dict[str, Any],
         blueprint_payload: dict[str, Any],
         explainability: dict[str, Any],
@@ -3274,13 +3280,85 @@ class GenerationTraceService:
                 explainability=explainability,
             ),
         }
+        brand_usage_snapshot = cls.build_brand_usage_report(
+            trace_id=trace_id,
+            mode="content.generate.readable_trace",
+            prompt=prompt,
+            tenant_id=tenant_id,
+            brand_space_id=brand_space_id,
+            studio_panel=studio_panel,
+            section_payloads=section_payloads,
+            runtime_brand_context=runtime_brand_context,
+            persona_context=persona_context,
+            objective_context=objective_context,
+            reference_assets=reference_assets,
+            template_candidates=template_candidates,
+            template_context=template_context,
+            retrieved_knowledge=retrieved_knowledge,
+            planning_hints=planning_hints,
+            explainability=explainability,
+            selected_template={
+                "template_id": str(
+                    template_context.get("selected_template_id")
+                    or template_context.get("template_id")
+                    or ""
+                ),
+                "template_name": str(
+                    template_context.get("selected_template_name")
+                    or template_context.get("template_name")
+                    or ""
+                ),
+            },
+            logo_candidates=logo_candidates,
+            logo_selection=logo_selection,
+        )
         compliance_summary = cls._validation_summary(explainability)
+        full_trace_logs = {
+            "trace_manifest": {
+                "trace_id": trace_id,
+                "tenant_id": str(tenant_id),
+                "brand_space_id": str(brand_space_id),
+                "prompt": prompt,
+                "studio_panel": studio_panel,
+            },
+            "request_payload": request_payload,
+            "section_payloads": section_payloads,
+            "runtime_brand_context": runtime_brand_context,
+            "persona_context": persona_context,
+            "objective_context": objective_context,
+            "reference_assets": reference_assets,
+            "template_candidates": template_candidates,
+            "template_context": template_context,
+            "retrieved_knowledge": retrieved_knowledge,
+            "planning_hints": planning_hints,
+            "logo_candidates": logo_candidates,
+            "logo_selection": logo_selection or {},
+            "generated_payload": generated_payload,
+            "blueprint_payload": blueprint_payload,
+            "brand_usage_snapshot": brand_usage_snapshot,
+            "input_access_summary": input_access_summary,
+            "compiled_context": (
+                explainability.get("compiled_context")
+                if isinstance(explainability.get("compiled_context"), dict)
+                else {}
+            ),
+            "selected_reference_images": explainability.get("selected_reference_images") or [],
+            "conditioning_reference_images": explainability.get("conditioning_reference_images") or [],
+            "generation_trace": (
+                explainability.get("generation_trace")
+                if isinstance(explainability.get("generation_trace"), dict)
+                else {}
+            ),
+            "validation_summary": compliance_summary,
+            "explainability_snapshot": explainability,
+        }
         bundle = {
             "planning_strategy": {
                 "trace_id": trace_id,
                 "format": format_name,
                 "stage": "planning_strategy",
                 "data_passed_for_image_generation": common_sources,
+                "full_trace_logs": full_trace_logs,
                 "strategy_output": cls._planning_strategy_output(research_editorial_brief),
                 "brand_evaluation_and_compliance": compliance_summary,
             },
@@ -3289,6 +3367,7 @@ class GenerationTraceService:
                 "format": format_name,
                 "stage": "content_generation",
                 "data_passed_for_image_generation": common_sources,
+                "full_trace_logs": full_trace_logs,
                 "content_generation_output": cls._content_generation_output(
                     content_plan=content_plan,
                     generated_payload=generated_payload,
@@ -3302,6 +3381,7 @@ class GenerationTraceService:
                 "format": format_name,
                 "stage": "layout_planning",
                 "data_passed_for_image_generation": common_sources,
+                "full_trace_logs": full_trace_logs,
                 "layout_planning_output": cls._layout_planning_output(
                     planning_hints=planning_hints,
                     blueprint_payload=blueprint_payload,
@@ -3314,6 +3394,7 @@ class GenerationTraceService:
                 "format": format_name,
                 "stage": "visual_planning",
                 "data_passed_for_image_generation": common_sources,
+                "full_trace_logs": full_trace_logs,
                 "visual_content_used_for_image_generation": cls._visual_content_used_summary(
                     visual_plan=visual_plan,
                     reference_assets=reference_assets,
@@ -3328,6 +3409,7 @@ class GenerationTraceService:
                 "format": format_name,
                 "stage": "slide_trace",
                 "data_passed_for_image_generation": common_sources,
+                "full_trace_logs": full_trace_logs,
                 "slide_or_section_trace": cls._slide_trace_output(
                     format_name=format_name,
                     generated_payload=generated_payload,

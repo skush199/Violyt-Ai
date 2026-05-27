@@ -7982,6 +7982,146 @@ def test_generation_trace_service_writes_brand_usage_report_to_dedicated_folder(
             rmtree(trace_base, ignore_errors=True)
 
 
+def test_generation_trace_service_enriches_readable_json_without_touching_text_output() -> None:
+    trace_base = Path("storage") / "generation_traces" / "test-traces" / str(uuid4())
+    readable_base = Path("storage") / "readable_generation_traces"
+    service = GenerationTraceService(base_dir=trace_base, enabled=True)
+
+    try:
+        trace = service.start_trace(
+            prompt="Create a seafood brand campaign visual.",
+            tenant_id=uuid4(),
+            brand_space_id=uuid4(),
+        )
+        assert trace is not None
+
+        trace_id = trace["trace_id"]
+        readable_bundle = service.build_visual_generation_readable_bundle(
+            trace_id=trace_id,
+            prompt="Create a seafood brand campaign visual.",
+            tenant_id=uuid4(),
+            brand_space_id=uuid4(),
+            studio_panel={"platform_preset": "instagram", "format": "static", "file_type": "png"},
+            request_payload={"prompt": "Create a seafood brand campaign visual.", "generate_image": True},
+            section_payloads={
+                "identity": {
+                    "brand_name": "The Good Fish Company",
+                    "brand_description": "Seafood-first trusted sourcing platform.",
+                },
+                "visual_identity": {
+                    "brand_mood": "fresh, clean, premium",
+                    "brand_color_palette": {"primary": "#1CA9C9"},
+                },
+            },
+            runtime_brand_context={
+                "identity": {
+                    "brand_name": "The Good Fish Company",
+                    "brand_description": "Seafood-first trusted sourcing platform.",
+                },
+                "visual_identity": {
+                    "brand_mood": "fresh, clean, premium",
+                    "brand_color_palette": {"primary": "#1CA9C9"},
+                },
+            },
+            persona_context={"name": "Urban seafood buyer", "audience_goals": ["trust online seafood freshness"]},
+            objective_context={"name": "Trust building", "configuration": {"cta_bias": "learn_more"}},
+            reference_assets=[
+                {
+                    "asset_id": str(uuid4()),
+                    "asset_role": "reference_creative",
+                    "storage_path": "tenant/brand/reference/reference-1.png",
+                    "trust_level": "trusted",
+                    "metadata": {"label": "Premium seafood reference"},
+                }
+            ],
+            template_candidates=[
+                {
+                    "template_id": str(uuid4()),
+                    "name": "Editorial seafood template",
+                    "score": 9.2,
+                    "match_type": "adapted_template",
+                }
+            ],
+            template_context={"selected_template_id": str(uuid4()), "selected_template_name": "Editorial seafood template"},
+            retrieved_knowledge={
+                "visual_identity": [
+                    {
+                        "score": 0.11,
+                        "content": "Use clean editorial seafood textures with aqua-led accents.",
+                        "metadata": {"source_id": "knowledge-1"},
+                    }
+                ]
+            },
+            planning_hints={"mode": "adapted_template", "template_name": "Editorial seafood template"},
+            logo_candidates=[{"asset_id": "logo-1", "storage_path": "tenant/brand/logo/logo.png"}],
+            logo_selection={"storage_path": "tenant/brand/logo/logo.png"},
+            generated_payload={"headline": "Fresh seafood, sourced with trust."},
+            blueprint_payload={"layout": "single_panel"},
+            explainability={
+                "compiled_context": {
+                    "brand_copy_brief": {"brand_name": "The Good Fish Company"},
+                    "brand_visual_brief": {"brand_mood": "fresh, clean, premium"},
+                },
+                "input_access_summary": {
+                    "brand_context": {
+                        "used_paths": ["identity.brand_name", "visual_identity.brand_mood"],
+                        "unused_paths": ["identity.brand_description", "visual_identity.brand_color_palette.primary"],
+                        "read_counts": {
+                            "identity.brand_name": 2,
+                            "visual_identity.brand_mood": 1,
+                        },
+                        "access_types": {
+                            "identity.brand_name": ["get", "__getitem__"],
+                            "visual_identity.brand_mood": ["get"],
+                        },
+                        "events": [
+                            {"timestamp": "2026-05-20T12:00:00", "path": "identity.brand_name", "access_type": "get"},
+                            {"timestamp": "2026-05-20T12:00:01", "path": "visual_identity.brand_mood", "access_type": "get"},
+                        ],
+                    },
+                },
+                "selected_reference_images": [
+                    {
+                        "asset_id": str(uuid4()),
+                        "asset_role": "reference_creative",
+                        "storage_path": "tenant/brand/reference/reference-1.png",
+                        "trust_level": "trusted",
+                        "metadata": {"label": "Premium seafood reference"},
+                    }
+                ],
+                "generation_trace": {"layout_source": "reference_template"},
+                "render_authority": "ai",
+                "generation_path": "image_led_social",
+            },
+        )
+
+        written_files = service.write_visual_generation_readable_bundle(trace_id, readable_bundle)
+        assert written_files
+
+        readable_dir = readable_base / trace_id
+        json_path = readable_dir / "planning_strategy.json"
+        text_path = readable_dir / "planning_strategy.txt"
+        assert json_path.exists()
+        assert text_path.exists()
+
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+        assert "full_trace_logs" in payload
+        assert payload["full_trace_logs"]["trace_manifest"]["trace_id"] == trace_id
+        assert payload["full_trace_logs"]["runtime_brand_context"]["identity"]["brand_name"] == "The Good Fish Company"
+        assert payload["full_trace_logs"]["input_access_summary"]["brand_context"]["used_paths"] == [
+            "identity.brand_name",
+            "visual_identity.brand_mood",
+        ]
+        assert payload["full_trace_logs"]["brand_usage_snapshot"]["sources_used"]["brand_form_data"]["identity"]["used"] is True
+        assert "Brand Following Score" in text_path.read_text(encoding="utf-8")
+    finally:
+        if trace_base.exists():
+            rmtree(trace_base, ignore_errors=True)
+        readable_dir = readable_base / trace_id if trace is not None else None
+        if readable_dir and readable_dir.exists():
+            rmtree(readable_dir, ignore_errors=True)
+
+
 def test_orchestrator_selects_multiple_reference_images_for_carousel() -> None:
     service = AIOrchestratorService()
     request = AIOrchestrationRequest(
