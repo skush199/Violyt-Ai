@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 from statistics import mean
 from typing import Any
+from uuid import UUID
 
 from app.ai.rag.ocr import OCRService
 from app.ai.tone_intelligence import ToneIntelligenceService
@@ -75,7 +76,7 @@ class BrandScoringService:
         self.storage = LocalObjectStorage()
         self.ocr = OCRService()
         self.tone = ToneIntelligenceService()
-        self.base_dir = Path(get_settings().object_storage_base_path) / self.DIRNAME
+        self.base_dir = Path(get_settings().object_storage_base_path)
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     def build_scorecard(
@@ -153,6 +154,22 @@ class BrandScoringService:
                 ),
             ),
         )
+        developer_explanation = self._developer_explanation(
+            prompt=prompt,
+            combined_output_text=combined_output_text,
+            studio_panel=studio_panel,
+            tone_feedback=tone_feedback,
+            visual_review=visual_review,
+            explainability=explainability,
+            on_brand=on_brand,
+            prompt_adherence=prompt_adherence,
+            relevance=relevance,
+            overall_score=overall_score,
+            output_assets=output_assets,
+            brand_context=brand_context,
+            persona_context=persona_context,
+            objective_context=objective_context,
+        )
         return {
             "overall_score": overall_score,
             "score_breakdown": {
@@ -162,25 +179,250 @@ class BrandScoringService:
             },
             "weighting": dict(self.WEIGHTING),
             "summary": [
-                self._on_brand_summary(on_brand),
-                self._prompt_adherence_summary(prompt_adherence),
-                self._relevance_summary(relevance),
+                self._on_brand_summary(
+                    on_brand,
+                    visual_review=visual_review,
+                    tone_feedback=tone_feedback,
+                ),
+                self._prompt_adherence_summary(
+                    prompt_adherence,
+                    visual_review=visual_review,
+                    studio_panel=studio_panel,
+                    output_assets=output_assets,
+                ),
+                self._relevance_summary(
+                    relevance,
+                    tone_feedback=tone_feedback,
+                ),
             ],
+            "developer_explanation": developer_explanation,
         }
 
     def save_scorecard(
         self,
         *,
+        tenant_id: UUID,
+        brand_space_id: UUID | None,
         output_id: str,
         scorecard: dict[str, Any],
     ) -> str:
-        file_path = self.base_dir / f"{output_id}.json"
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(
-            json.dumps(scorecard, ensure_ascii=False, indent=2, default=str),
-            encoding="utf-8",
+        stored = self.storage.save_bytes(
+            tenant_id=tenant_id,
+            brand_space_id=brand_space_id,
+            category=self.DIRNAME,
+            filename=f"{output_id}.json",
+            content=json.dumps(scorecard, ensure_ascii=False, indent=2, default=str).encode("utf-8"),
         )
-        return str(file_path)
+        return str(stored.absolute_path)
+
+    def _developer_explanation(
+        self,
+        *,
+        prompt: str,
+        combined_output_text: str,
+        studio_panel: dict[str, Any],
+        tone_feedback: dict[str, Any],
+        visual_review: dict[str, Any],
+        explainability: dict[str, Any],
+        on_brand: int,
+        prompt_adherence: int,
+        relevance: int,
+        overall_score: int,
+        output_assets: list[dict[str, Any]],
+        brand_context: dict[str, Any],
+        persona_context: dict[str, Any],
+        objective_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        dimensions = (
+            tone_feedback.get("persuasion_dimensions")
+            if isinstance(tone_feedback.get("persuasion_dimensions"), dict)
+            else {}
+        )
+        text_brand = float(dimensions.get("brand_alignment") or 0.0)
+        visual_brand_raw = float(visual_review.get("brand_alignment_score") or text_brand or 70.0)
+        aesthetic_consistency = float(visual_review.get("aesthetic_consistency_score") or 70.0)
+        visual_brand = (visual_brand_raw * 0.85) + (aesthetic_consistency * 0.15)
+        usage_score = float(self._source_usage_score(explainability))
+
+        text_prompt = float(self._prompt_alignment_score(prompt, combined_output_text, []))
+        visual_prompt = float(visual_review.get("prompt_alignment_score") or text_prompt or 70.0)
+        format_score = float(
+            self._format_fit_score(
+                studio_panel=studio_panel,
+                visual_review=visual_review,
+                output_assets=output_assets,
+            )
+        )
+
+        context_reference = self._context_reference_text(
+            persona_context=persona_context,
+            objective_context=objective_context,
+            brand_context=brand_context,
+        )
+        context_score = (
+            float(self._prompt_alignment_score(context_reference, combined_output_text, []))
+            if context_reference
+            else 70.0
+        )
+        quality_score = float(
+            mean(
+                [
+                    float(dimensions.get("clarity") or 0.0),
+                    float(dimensions.get("proof_strength") or 0.0),
+                    float(dimensions.get("objection_handling") or 0.0),
+                    float(dimensions.get("distinctiveness") or 0.0),
+                ]
+            )
+        )
+        prompt_support = float(self._prompt_alignment_score(prompt, combined_output_text, []))
+        visual_quality = float(
+            mean(
+                [
+                    float(visual_review.get("layout_readability_score") or 70.0),
+                    float(visual_review.get("visual_diagnostic_score") or 70.0),
+                ]
+            )
+        )
+
+        matched_terms, missing_terms = self._prompt_vs_output_terms(prompt, visual_review)
+        generated_excerpt = combined_output_text[:500].strip()
+        if not generated_excerpt:
+            generated_excerpt = self._visual_text_excerpt(visual_review)[:500].strip()
+
+        return {
+            "overall": {
+                "formula": "overall = on_brand*0.4 + prompt_adherence*0.35 + relevance*0.25",
+                "computed_from": {
+                    "on_brand": on_brand,
+                    "prompt_adherence": prompt_adherence,
+                    "relevance": relevance,
+                },
+                "weighted_contributions": {
+                    "on_brand": round(on_brand * self.WEIGHTING["on_brand"], 2),
+                    "prompt_adherence": round(prompt_adherence * self.WEIGHTING["prompt_adherence"], 2),
+                    "relevance": round(relevance * self.WEIGHTING["relevance"], 2),
+                },
+                "final_score": overall_score,
+            },
+            "on_brand": {
+                "formula": "on_brand = visual_brand*0.5 + text_brand*0.35 + usage_score*0.15",
+                "score": on_brand,
+                "components": {
+                    "visual_brand": round(visual_brand, 2),
+                    "text_brand": round(text_brand, 2),
+                    "usage_score": round(usage_score, 2),
+                },
+                "visual_details": {
+                    "brand_alignment_score": int(visual_review.get("brand_alignment_score") or 0),
+                    "style_alignment_score": int(visual_review.get("style_alignment_score") or 0),
+                    "mood_alignment_score": int(visual_review.get("mood_alignment_score") or 0),
+                    "typography_alignment_score": int(visual_review.get("typography_alignment_score") or 0),
+                    "motif_alignment_score": int(visual_review.get("motif_alignment_score") or 0),
+                    "reference_similarity_score": int(visual_review.get("reference_similarity_score") or 0),
+                    "aesthetic_consistency_score": int(visual_review.get("aesthetic_consistency_score") or 0),
+                    "page_count": int(visual_review.get("page_count") or 0),
+                },
+                "text_details": {
+                    "brand_alignment": int(dimensions.get("brand_alignment") or 0),
+                    "matched_tone_signals": [str(item).strip() for item in (tone_feedback.get("matched_signals") or []) if str(item).strip()][:6],
+                    "deviations": [str(item).strip() for item in (tone_feedback.get("deviations") or []) if str(item).strip()][:6],
+                },
+                "usage_details": self._usage_details(explainability),
+                "reason": self._on_brand_summary(
+                    on_brand,
+                    visual_review=visual_review,
+                    tone_feedback=tone_feedback,
+                ),
+            },
+            "prompt_adherence": {
+                "formula": "prompt_adherence = visual_prompt*0.5 + text_prompt*0.35 + format_fit*0.15",
+                "score": prompt_adherence,
+                "components": {
+                    "visual_prompt": round(visual_prompt, 2),
+                    "text_prompt": round(text_prompt, 2),
+                    "format_fit": round(format_score, 2),
+                },
+                "prompt_details": {
+                    "prompt": prompt,
+                    "generated_text_excerpt": generated_excerpt,
+                    "matched_terms": matched_terms,
+                    "missing_terms": missing_terms,
+                    "format": str(studio_panel.get("format") or "").strip() or None,
+                    "output_asset_count": len(output_assets),
+                },
+                "reason": self._prompt_adherence_summary(
+                    prompt_adherence,
+                    visual_review=visual_review,
+                    studio_panel=studio_panel,
+                    output_assets=output_assets,
+                ),
+            },
+            "relevance": {
+                "formula": "relevance = context_score*0.45 + quality_score*0.3 + prompt_support*0.15 + visual_quality*0.10",
+                "score": relevance,
+                "components": {
+                    "context_score": round(context_score, 2),
+                    "quality_score": round(quality_score, 2),
+                    "prompt_support": round(prompt_support, 2),
+                    "visual_quality": round(visual_quality, 2),
+                },
+                "quality_dimensions": {
+                    "clarity": int(dimensions.get("clarity") or 0),
+                    "proof_strength": int(dimensions.get("proof_strength") or 0),
+                    "objection_handling": int(dimensions.get("objection_handling") or 0),
+                    "distinctiveness": int(dimensions.get("distinctiveness") or 0),
+                },
+                "context_reference_excerpt": context_reference[:300].strip(),
+                "reason": self._relevance_summary(
+                    relevance,
+                    tone_feedback=tone_feedback,
+                ),
+            },
+        }
+
+    @staticmethod
+    def _usage_details(explainability: dict[str, Any]) -> dict[str, Any]:
+        input_access_summary = (
+            explainability.get("input_access_summary")
+            if isinstance(explainability.get("input_access_summary"), dict)
+            else {}
+        )
+        details: dict[str, Any] = {}
+        for source_name in ("brand_context", "persona_context", "objective_context"):
+            summary = input_access_summary.get(source_name)
+            if not isinstance(summary, dict):
+                details[source_name] = {
+                    "used_path_count": 0,
+                    "unused_path_count": 0,
+                    "used_paths_sample": [],
+                }
+                continue
+            details[source_name] = {
+                "used_path_count": len(summary.get("used_paths") or []),
+                "unused_path_count": len(summary.get("unused_paths") or []),
+                "used_paths_sample": [str(item).strip() for item in (summary.get("used_paths") or []) if str(item).strip()][:8],
+            }
+        return details
+
+    @staticmethod
+    def _prompt_vs_output_terms(prompt: str, visual_review: dict[str, Any]) -> tuple[list[str], list[str]]:
+        matched_terms: list[str] = []
+        missing_terms: list[str] = []
+        for page in visual_review.get("page_reviews") or []:
+            if not isinstance(page, dict):
+                continue
+            for term in page.get("matched_prompt_terms") or []:
+                text = str(term or "").strip()
+                if text and text not in matched_terms:
+                    matched_terms.append(text)
+            for term in page.get("missing_prompt_terms") or []:
+                text = str(term or "").strip()
+                if text and text not in missing_terms:
+                    missing_terms.append(text)
+        if not matched_terms and not missing_terms:
+            prompt_tokens = BrandScoringService._prompt_topic_tokens(prompt)
+            missing_terms = prompt_tokens[:6]
+        return matched_terms[:8], missing_terms[:8]
 
     def _visual_review_for_assets(
         self,
@@ -564,27 +806,120 @@ class BrandScoringService:
         return 60
 
     @staticmethod
-    def _on_brand_summary(score: int) -> str:
+    def _metric_phrase(label: str) -> str:
+        return label.replace("_", " ")
+
+    @classmethod
+    def _on_brand_summary(
+        cls,
+        score: int,
+        *,
+        visual_review: dict[str, Any],
+        tone_feedback: dict[str, Any],
+    ) -> str:
+        text_brand = float(
+            (
+                tone_feedback.get("persuasion_dimensions")
+                if isinstance(tone_feedback.get("persuasion_dimensions"), dict)
+                else {}
+            ).get("brand_alignment")
+            or 0.0
+        )
+        metrics = {
+            "style alignment": int(visual_review.get("style_alignment_score") or 0),
+            "mood alignment": int(visual_review.get("mood_alignment_score") or 0),
+            "typography alignment": int(visual_review.get("typography_alignment_score") or 0),
+            "motif alignment": int(visual_review.get("motif_alignment_score") or 0),
+            "reference similarity": int(visual_review.get("reference_similarity_score") or 0),
+            "aesthetic consistency": int(visual_review.get("aesthetic_consistency_score") or 0),
+        }
+        weakest_label, weakest_score = min(metrics.items(), key=lambda item: item[1]) if metrics else ("brand fit", score)
+        strongest = [label for label, value in metrics.items() if value >= 82][:2]
         if score >= 85:
+            if strongest:
+                return f"Strong visual brand fit, especially in {', '.join(strongest)}."
+            if text_brand >= 80:
+                return "Strong visual brand fit with copy tone aligned to the brand."
             return "Strong visual brand fit."
         if score >= 70:
+            if weakest_score < 60:
+                return f"Output is mostly on-brand, but {weakest_label} needs tighter alignment."
+            if text_brand < 60:
+                return "Output is mostly on-brand, but the copy tone still drifts from the brand voice."
             return "Output is mostly on-brand with minor drift."
-        return "Brand fit is inconsistent and needs correction."
+        if text_brand < 55 and weakest_score < 55:
+            return f"Brand fit is inconsistent in both copy tone and {weakest_label}."
+        return f"Brand fit is inconsistent, with the biggest gap in {weakest_label}."
 
-    @staticmethod
-    def _prompt_adherence_summary(score: int) -> str:
+    @classmethod
+    def _prompt_adherence_summary(
+        cls,
+        score: int,
+        *,
+        visual_review: dict[str, Any],
+        studio_panel: dict[str, Any],
+        output_assets: list[dict[str, Any]],
+    ) -> str:
+        format_score = cls._format_fit_score(
+            studio_panel=studio_panel,
+            visual_review=visual_review,
+            output_assets=output_assets,
+        )
+        missing_terms: list[str] = []
+        for page in visual_review.get("page_reviews") or []:
+            if not isinstance(page, dict):
+                continue
+            for term in page.get("missing_prompt_terms") or []:
+                text = str(term or "").strip()
+                if text and text not in missing_terms:
+                    missing_terms.append(text)
         if score >= 85:
-            return "Prompt topic and format are followed closely."
+            if format_score >= 90:
+                return "Prompt topic and requested format are followed closely."
+            return "Prompt topic is followed closely across the output."
         if score >= 70:
+            if format_score < 70:
+                return "Prompt intent is mostly followed, but the output structure misses the requested format."
+            if missing_terms:
+                return f"Prompt intent is mostly followed, but some themes are weak: {', '.join(missing_terms[:3])}."
             return "Prompt intent is mostly followed with some gaps."
+        if missing_terms:
+            return f"Prompt adherence is weak, with key themes missing such as {', '.join(missing_terms[:3])}."
         return "Prompt adherence is weak and the output misses key intent."
 
     @staticmethod
-    def _relevance_summary(score: int) -> str:
+    def _relevance_summary(
+        score: int,
+        *,
+        tone_feedback: dict[str, Any],
+    ) -> str:
+        dimensions = (
+            tone_feedback.get("persuasion_dimensions")
+            if isinstance(tone_feedback.get("persuasion_dimensions"), dict)
+            else {}
+        )
+        clarity = int(dimensions.get("clarity") or 0)
+        proof_strength = int(dimensions.get("proof_strength") or 0)
+        objection_handling = int(dimensions.get("objection_handling") or 0)
+        distinctiveness = int(dimensions.get("distinctiveness") or 0)
         if score >= 85:
+            if proof_strength >= 80 and clarity >= 80:
+                return "Output is highly relevant, with clear messaging and strong proof cues."
+            if distinctiveness >= 80:
+                return "Output is highly relevant and feels tailored rather than generic."
             return "Output is highly relevant to the audience and objective."
         if score >= 70:
+            if distinctiveness < 60:
+                return "Output is relevant, but it still feels slightly generic for the audience."
+            if proof_strength < 60:
+                return "Output is relevant, but stronger proof or specificity would help."
             return "Output is relevant but slightly generic."
+        if clarity < 55:
+            return "Output relevance is weak because the message is not clear enough for the audience."
+        if proof_strength < 55:
+            return "Output relevance is weak because the value is not grounded in strong proof."
+        if objection_handling < 55:
+            return "Output relevance is weak because key audience concerns are not addressed."
         return "Output relevance is weak for the audience or objective."
 
     @classmethod

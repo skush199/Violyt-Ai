@@ -3413,6 +3413,21 @@ class ContentService:
         return repaired or text
 
     @classmethod
+    def _strip_null_bytes(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.replace("\x00", "")
+        if isinstance(value, dict):
+            return {
+                key: cls._strip_null_bytes(nested)
+                for key, nested in value.items()
+            }
+        if isinstance(value, list):
+            return [cls._strip_null_bytes(item) for item in value]
+        if isinstance(value, tuple):
+            return [cls._strip_null_bytes(item) for item in value]
+        return value
+
+    @classmethod
     def _sequence_pack_is_weak_hint(cls, value: object) -> bool:
         text = cls._repair_encoding_noise(value)
         if not text:
@@ -8707,6 +8722,8 @@ class ContentService:
             )
             output_id = str(content_version.id or trace_id or uuid4())
             storage_path = self.brand_scoring.save_scorecard(
+                tenant_id=content_version.tenant_id,
+                brand_space_id=content_version.brand_space_id,
                 output_id=output_id,
                 scorecard=scorecard,
             )
@@ -9175,15 +9192,15 @@ class ContentService:
             created_by=user_id,
             lifecycle_state=ContentLifecycle.GENERATED,
             content_type="content",
-            title=response.text.headline,
-            prompt=effective_prompt,
+            title=str(self._strip_null_bytes(response.text.headline) or ""),
+            prompt=str(self._strip_null_bytes(effective_prompt) or ""),
             selected_persona_id=persona.id if persona else None,
             selected_template_id=template.id if template else None,
             objective_id=objective.id if objective else None,
-            studio_panel=payload.studio_panel.model_dump(),
-            generated_payload=response.text.model_dump(),
-            blueprint_payload=response.blueprint.model_dump(),
-            explainability_metadata={
+            studio_panel=self._strip_null_bytes(payload.studio_panel.model_dump()),
+            generated_payload=self._strip_null_bytes(response.text.model_dump()),
+            blueprint_payload=self._strip_null_bytes(response.blueprint.model_dump()),
+            explainability_metadata=self._strip_null_bytes({
                 **response.explainability,
                 "knowledge_state": knowledge_state,
                 "live_research": live_research,
@@ -9211,9 +9228,9 @@ class ContentService:
                 "prompt_lineage": prompt_lineage,
                 "generation_trace_id": trace_id,
                 "artifact_state": artifact_state,
-            },
+            }),
             tone_score=response.tone_analysis["score"],
-            tone_feedback=response.tone_analysis,
+            tone_feedback=self._strip_null_bytes(response.tone_analysis),
         )
         await self.contents.add(content_version)
 
@@ -9636,17 +9653,17 @@ class ContentService:
             created_by=user_id,
             lifecycle_state=ContentLifecycle.EDITED,
             content_type=str(getattr(original, "content_type", "content") or "content"),
-            title=str(repaired_payload.get("headline") or getattr(original, "title", "") or "").strip(),
-            prompt=payload.rewrite_instruction,
+            title=str(self._strip_null_bytes(repaired_payload.get("headline") or getattr(original, "title", "") or "")).strip(),
+            prompt=str(self._strip_null_bytes(payload.rewrite_instruction) or ""),
             selected_persona_id=original.selected_persona_id,
             selected_template_id=original.selected_template_id,
             objective_id=original.objective_id,
-            studio_panel=studio_panel,
-            generated_payload=repaired_payload,
-            blueprint_payload=rewritten_blueprint,
-            explainability_metadata=rewritten_explainability,
+            studio_panel=self._strip_null_bytes(studio_panel),
+            generated_payload=self._strip_null_bytes(repaired_payload),
+            blueprint_payload=self._strip_null_bytes(rewritten_blueprint),
+            explainability_metadata=self._strip_null_bytes(rewritten_explainability),
             tone_score=int(initial_tone_feedback.get("score") or getattr(original, "tone_score", 0) or 0),
-            tone_feedback=initial_tone_feedback,
+            tone_feedback=self._strip_null_bytes(initial_tone_feedback),
         )
         await self.contents.add(rewritten)
         if session:

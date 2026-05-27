@@ -14,6 +14,10 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TRACE_ROOT = ROOT / "storage" / "generation_traces"
 DEFAULT_OUTPUT_DIR = ROOT / "storage" / "ragas_evaluation"
@@ -463,19 +467,34 @@ def heuristic_scores(sample: EvalSample) -> dict[str, float]:
 
 
 def try_run_ragas(samples: list[EvalSample]) -> tuple[str, dict[str, dict[str, float]], str | None]:
-    try:
-        from datasets import Dataset
-        from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-        from ragas import evaluate
-        from ragas.embeddings import LangchainEmbeddingsWrapper
-        from ragas.llms import LangchainLLMWrapper
-        from ragas.metrics import answer_relevancy, context_precision, context_recall, faithfulness
-        from ragas.run_config import RunConfig
-    except Exception as exc:
-        return "heuristic_fallback", {}, f"RAGAS unavailable: {exc}"
+    logger.debug("ragas_evaluation.try_run_ragas samples=%d", len(samples))
+
+    _import_errors: list[str] = []
+    for pkg, stmt in [
+        ("datasets", "from datasets import Dataset"),
+        ("langchain_openai", "from langchain_openai import ChatOpenAI, OpenAIEmbeddings"),
+        ("ragas", "from ragas import evaluate"),
+        ("ragas.embeddings", "from ragas.embeddings import LangchainEmbeddingsWrapper"),
+        ("ragas.llms", "from ragas.llms import LangchainLLMWrapper"),
+        ("ragas.metrics", "from ragas.metrics import answer_relevancy, context_precision, context_recall, faithfulness"),
+        ("ragas.run_config", "from ragas.run_config import RunConfig"),
+    ]:
+        try:
+            exec(stmt, globals())  # noqa: S102
+        except Exception as exc:
+            logger.error("ragas_evaluation.import_failed pkg=%s error=%s", pkg, exc)
+            _import_errors.append(f"{pkg}: {exc}")
+
+    if _import_errors:
+        msg = "RAGAS unavailable: " + "; ".join(_import_errors)
+        logger.warning("ragas_evaluation.import_blocked errors=%s", _import_errors)
+        return "heuristic_fallback", {}, msg
 
     try:
-        if not os.getenv("OPENAI_API_KEY"):
+        api_key_present = bool(os.getenv("OPENAI_API_KEY"))
+        logger.debug("ragas_evaluation.api_key_present=%s", api_key_present)
+        if not api_key_present:
+            logger.warning("ragas_evaluation.no_api_key using heuristic fallback")
             return "heuristic_fallback", {}, "RAGAS judge model was not configured. Fallback scores were used."
 
         llm_model = os.getenv("RAGAS_LLM_MODEL") or os.getenv("LLM_MODEL") or "gpt-4o-mini"
@@ -747,8 +766,19 @@ def evaluate_carousel_slides(trace_dirs: list[Path], output_dir: Path) -> None:
 
 
 def evaluate_traces(trace_root: Path, output_dir: Path, trace_id: str | None = None) -> dict[str, Any]:
+    logger.debug(
+        "ragas_evaluation.evaluate_traces trace_root=%s trace_id=%s exists=%s",
+        trace_root, trace_id, trace_root.exists(),
+    )
     if trace_id:
-        trace_dirs = [trace_root / trace_id]
+        trace_dir_check = trace_root / trace_id
+        logger.debug(
+            "ragas_evaluation.trace_dir=%s exists=%s files=%s",
+            trace_dir_check,
+            trace_dir_check.exists(),
+            [f.name for f in trace_dir_check.iterdir()] if trace_dir_check.exists() else [],
+        )
+        trace_dirs = [trace_dir_check]
     else:
         trace_dirs = [
             path
@@ -772,7 +802,9 @@ def evaluate_traces(trace_root: Path, output_dir: Path, trace_id: str | None = N
             }
         )
 
+    logger.debug("ragas_evaluation.samples_built count=%d", len(all_samples))
     mode, ragas_scores, warning = try_run_ragas(all_samples)
+    logger.debug("ragas_evaluation.mode=%s warning=%s", mode, warning)
     rows = []
     for sample in all_samples:
         scores = ragas_scores.get(sample.sample_id) if ragas_scores else heuristic_scores(sample)

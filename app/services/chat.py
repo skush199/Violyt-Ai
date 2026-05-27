@@ -603,6 +603,7 @@ class ChatService:
                         "workflow_state": workflow_context.workflow_state if workflow_context else None,
                         "workflow_review_summary": review_result.get("summary") if isinstance(review_result, dict) else None,
                         "artifact_state": (content_version.explainability_metadata or {}).get("artifact_state", {}),
+                        "brand_scoring": (content_version.explainability_metadata or {}).get("brand_scoring", {}),
                     }
                 )
                 assistant_message = ChatMessage(
@@ -818,6 +819,7 @@ class ChatService:
                 "image_generation_requested": bool(image_asset_count),
                 "image_generation_status": "generated" if image_asset_count else "not_generated",
                 "image_asset_count": image_asset_count,
+                "brand_scoring": explainability.get("brand_scoring", {}),
             }
         )
 

@@ -46,7 +46,7 @@ def test_brand_scoring_service_builds_deterministic_scorecard() -> None:
         output_assets=[{"storage_path": "tenant/brand/generated/output.png", "mime_type": "image/png", "asset_kind": "image"}],
     )
 
-    assert set(scorecard.keys()) == {"overall_score", "score_breakdown", "weighting", "summary"}
+    assert set(scorecard.keys()) == {"overall_score", "score_breakdown", "weighting", "summary", "developer_explanation"}
     assert scorecard["weighting"] == {
         "on_brand": 0.4,
         "prompt_adherence": 0.35,
@@ -55,22 +55,40 @@ def test_brand_scoring_service_builds_deterministic_scorecard() -> None:
     assert set(scorecard["score_breakdown"].keys()) == {"on_brand", "prompt_adherence", "relevance"}
     assert 0 <= scorecard["overall_score"] <= 100
     assert len(scorecard["summary"]) == 3
+    assert set(scorecard["developer_explanation"].keys()) == {"overall", "on_brand", "prompt_adherence", "relevance"}
+    assert "formula" in scorecard["developer_explanation"]["on_brand"]
+    assert "components" in scorecard["developer_explanation"]["prompt_adherence"]
 
 
 def test_brand_scoring_service_saves_json_to_brand_scoring_folder() -> None:
     service = BrandScoringService(session=None)
+    tenant_id = uuid4()
+    brand_space_id = uuid4()
     output_id = str(uuid4())
     scorecard = {
         "overall_score": 78,
         "score_breakdown": {"on_brand": 82, "prompt_adherence": 75, "relevance": 76},
         "weighting": {"on_brand": 0.4, "prompt_adherence": 0.35, "relevance": 0.25},
         "summary": ["Strong visual brand fit.", "Prompt topic is mostly followed.", "Output is relevant but slightly generic."],
+        "developer_explanation": {
+            "overall": {"formula": "overall = ...", "computed_from": {}, "weighted_contributions": {}, "final_score": 78},
+            "on_brand": {"formula": "on_brand = ...", "score": 82, "components": {}},
+            "prompt_adherence": {"formula": "prompt_adherence = ...", "score": 75, "components": {}},
+            "relevance": {"formula": "relevance = ...", "score": 76, "components": {}},
+        },
     }
-    written = service.save_scorecard(output_id=output_id, scorecard=scorecard)
+    written = service.save_scorecard(
+        tenant_id=tenant_id,
+        brand_space_id=brand_space_id,
+        output_id=output_id,
+        scorecard=scorecard,
+    )
     path = Path(written)
     try:
         assert path.exists()
         assert path.parent.name == "brand_scoring"
+        assert path.parent.parent.name == str(brand_space_id)
+        assert path.parent.parent.parent.name == str(tenant_id)
         payload = json.loads(path.read_text(encoding="utf-8"))
         assert payload == scorecard
     finally:
