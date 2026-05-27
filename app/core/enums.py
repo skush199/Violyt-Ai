@@ -154,6 +154,7 @@ class JobType(StrEnum):
     KNOWLEDGE_PROCESS = "knowledge_process"
     TEMPLATE_ANALYSIS = "template_analysis"
     BRAND_CONTEXT_REFRESH = "brand_context_refresh"
+    RAGAS_EVALUATION = "ragas_evaluation"
     RENDER_PREVIEW = "render_preview"
     RENDER_EXPORT = "render_export"
     SOCIAL_PUBLISH = "social_publish"
