@@ -35,6 +35,7 @@ class BrandScoringService:
         "check",
         "consistency",
         "content",
+        "carousel",
         "create",
         "creative",
         "design",
@@ -47,10 +48,15 @@ class BrandScoringService:
         "guideline",
         "guidelines",
         "goal",
+        "how",
         "image",
+        "include",
+        "infographic",
         "instagram",
         "layout",
+        "linkedin",
         "media",
+        "more",
         "new",
         "panel",
         "platform",
@@ -63,13 +69,182 @@ class BrandScoringService:
         "social",
         "static",
         "strategy",
+        "such",
         "that",
         "the",
         "tone",
+        "type",
         "using",
+        "use",
         "visual",
         "with",
+        "which",
+        "also",
+        "actual",
+        "between",
     }
+    PROMPT_EQUIVALENT_PHRASES = {
+        "traditional savings": (
+            "safe savings",
+            "traditional savings",
+            "conventional savings",
+            "standard savings",
+        ),
+        "warning tone": (
+            "warning tone",
+            "sharp reminder",
+            "cautionary tone",
+            "warning reminder",
+        ),
+    }
+    PROMPT_EQUIVALENT_TOKENS = {
+        "erode": {
+            "decline",
+            "declined",
+            "declines",
+            "declining",
+            "diminish",
+            "diminished",
+            "diminishes",
+            "diminishing",
+            "erode",
+            "eroded",
+            "erodes",
+            "eroding",
+            "erosion",
+            "shrink",
+            "shrinking",
+            "shrinks",
+            "weaken",
+            "weakening",
+            "weakens",
+        },
+        "subtle": {
+            "gradual",
+            "gradually",
+            "gently",
+            "quiet",
+            "quietly",
+            "soft",
+            "softly",
+            "subtle",
+            "subtly",
+            "understated",
+        },
+        "warning": {
+            "alert",
+            "alerts",
+            "caution",
+            "cautionary",
+            "reminder",
+            "reminders",
+            "warn",
+            "warning",
+            "warnings",
+        },
+    }
+    FORMAT_CTA_PATTERN = re.compile(
+        r"\b(call|book|claim|compare|contact|discover|download|explore|get|join|learn|shop|start|try|see|schedule)\b",
+        flags=re.IGNORECASE,
+    )
+    FORMAT_GENERIC_CTA_PHRASES = {
+        "discover more",
+        "explore more",
+        "learn more",
+        "read more",
+        "see more",
+    }
+    FORMAT_PROOF_PATTERN = re.compile(
+        r"\b(?:soc\s*2|iso\s*27001|\d+(?:\.\d+)?(?:%|x)|\d+(?:\.\d+)?\s*(?:day|days|week|weeks|month|months|year|years|hour|hours|min|mins|minute|minutes|team|teams|customer|customers|client|clients|audit|audits|step|steps|users|leaders|countries|markets))\b",
+        flags=re.IGNORECASE,
+    )
+    PROMPT_GENERIC_CONTENT_WORDS = {
+        "actual",
+        "also",
+        "between",
+        "differences",
+        "difference",
+        "explain",
+        "guidance",
+        "include",
+        "suitable",
+        "type",
+        "which",
+    }
+    PROMPT_SEMANTIC_GROUP_PATTERNS = (
+        {
+            "label": "bond comparison",
+            "pattern": re.compile(r"\b(compare|comparison|difference|differences|versus|vs\.?)\b", flags=re.IGNORECASE),
+            "aliases": (
+                "compare",
+                "comparison",
+                "difference",
+                "differences",
+                "versus",
+                "vs",
+                "break down",
+                "distinguish",
+            ),
+            "weight": 1.15,
+        },
+        {
+            "label": "beginner suitability guidance",
+            "pattern": re.compile(r"\b(beginner|beginners|novice|new investor|first[- ]time investor|suitable|best for|ideal for)\b", flags=re.IGNORECASE),
+            "aliases": (
+                "beginner",
+                "beginners",
+                "beginner-friendly",
+                "beginner friendly",
+                "new investor",
+                "new investors",
+                "first-time investor",
+                "first time investor",
+                "novice investor",
+                "best for beginners",
+                "ideal for beginners",
+                "suitable for beginners",
+                "good for beginners",
+            ),
+            "weight": 1.2,
+        },
+        {
+            "label": "fixed rate bonds",
+            "pattern": re.compile(r"\bfixed rate bonds?\b", flags=re.IGNORECASE),
+            "aliases": (
+                "fixed rate bond",
+                "fixed rate bonds",
+                "fixed coupon bond",
+                "fixed coupon bonds",
+                "fixed return bond",
+                "fixed return bonds",
+            ),
+            "weight": 1.25,
+        },
+        {
+            "label": "floating rate bonds",
+            "pattern": re.compile(r"\bfloating rate bonds?\b", flags=re.IGNORECASE),
+            "aliases": (
+                "floating rate bond",
+                "floating rate bonds",
+                "floating coupon bond",
+                "floating coupon bonds",
+                "variable rate bond",
+                "variable rate bonds",
+            ),
+            "weight": 1.25,
+        },
+        {
+            "label": "fd bonds",
+            "pattern": re.compile(r"\bfd bonds?\b", flags=re.IGNORECASE),
+            "aliases": (
+                "fd bond",
+                "fd bonds",
+                "fixed deposit bond",
+                "fixed deposit bonds",
+            ),
+            "weight": 1.15,
+        },
+    )
 
     def __init__(self, session) -> None:
         self.session = session
@@ -131,6 +306,7 @@ class BrandScoringService:
             studio_panel=studio_panel,
             visual_review=visual_review,
             output_assets=output_assets,
+            generated_payload=generated_payload,
         )
         relevance = self._relevance_score(
             prompt=prompt,
@@ -166,6 +342,7 @@ class BrandScoringService:
             relevance=relevance,
             overall_score=overall_score,
             output_assets=output_assets,
+            generated_payload=generated_payload,
             brand_context=brand_context,
             persona_context=persona_context,
             objective_context=objective_context,
@@ -186,9 +363,11 @@ class BrandScoringService:
                 ),
                 self._prompt_adherence_summary(
                     prompt_adherence,
+                    prompt=prompt,
                     visual_review=visual_review,
                     studio_panel=studio_panel,
                     output_assets=output_assets,
+                    generated_payload=generated_payload,
                 ),
                 self._relevance_summary(
                     relevance,
@@ -229,6 +408,7 @@ class BrandScoringService:
         relevance: int,
         overall_score: int,
         output_assets: list[dict[str, Any]],
+        generated_payload: dict[str, Any],
         brand_context: dict[str, Any],
         persona_context: dict[str, Any],
         objective_context: dict[str, Any],
@@ -248,10 +428,19 @@ class BrandScoringService:
         visual_prompt = float(visual_review.get("prompt_alignment_score") or text_prompt or 70.0)
         format_score = float(
             self._format_fit_score(
+                prompt=prompt,
                 studio_panel=studio_panel,
                 visual_review=visual_review,
                 output_assets=output_assets,
+                generated_payload=generated_payload,
             )
+        )
+        format_diagnostics = self._format_fit_details(
+            prompt=prompt,
+            studio_panel=studio_panel,
+            visual_review=visual_review,
+            output_assets=output_assets,
+            generated_payload=generated_payload,
         )
 
         context_reference = self._context_reference_text(
@@ -260,7 +449,12 @@ class BrandScoringService:
             brand_context=brand_context,
         )
         context_score = (
-            float(self._prompt_alignment_score(context_reference, combined_output_text, []))
+            float(
+                self._context_alignment_score(
+                    context_reference,
+                    combined_output_text,
+                )
+            )
             if context_reference
             else 70.0
         )
@@ -285,13 +479,218 @@ class BrandScoringService:
         )
 
         matched_terms, missing_terms = self._prompt_vs_output_terms(prompt, visual_review)
+        semantic_matched_terms, semantic_missing_terms = self._prompt_term_diagnostics(
+            prompt,
+            combined_output_text,
+            [],
+        )
         generated_excerpt = combined_output_text[:500].strip()
         if not generated_excerpt:
             generated_excerpt = self._visual_text_excerpt(visual_review)[:500].strip()
 
+        on_brand_base = (visual_brand * 0.5) + (text_brand * 0.35) + (usage_score * 0.15)
+        on_brand_boosts, on_brand_penalties = self._component_effects(
+            components=[
+                {
+                    "name": "visual_brand",
+                    "label": "Visual brand alignment stayed above the neutral threshold",
+                    "reason_low": "Visual brand alignment drifted below the neutral threshold",
+                    "value": visual_brand,
+                    "weight": 0.5,
+                    "layer": "visual",
+                    "rule": "visual_brand_component",
+                },
+                {
+                    "name": "text_brand",
+                    "label": "Copy tone stayed aligned with the brand",
+                    "reason_low": "Copy tone drifted from the brand voice",
+                    "value": text_brand,
+                    "weight": 0.35,
+                    "layer": "text",
+                    "rule": "text_brand_component",
+                },
+                {
+                    "name": "usage_score",
+                    "label": "Brand/persona/objective context was actively used",
+                    "reason_low": "Context usage was thinner than expected",
+                    "value": usage_score,
+                    "weight": 0.15,
+                    "layer": "usage",
+                    "rule": "usage_component",
+                },
+            ]
+        )
+        on_brand_penalties.extend(
+            self._explicit_rule_adjustments(
+                [
+                    {
+                        "applies": visual_brand < 55,
+                        "impact": -8.0,
+                        "layer": "visual",
+                        "rule": "visual_brand_below_guardrail",
+                        "reason": "Visual brand alignment fell below the guardrail, so the on-brand score was reduced.",
+                    }
+                ]
+            )
+        )
+        on_brand_after_rules = on_brand_base + sum(float(item["impact"]) for item in on_brand_penalties)
+        if usage_score < 25 and on_brand_after_rules > 74:
+            on_brand_penalties.append(
+                self._explanation_item(
+                    reason="Very low context usage triggered the on-brand score cap.",
+                    impact=round(74.0 - on_brand_after_rules, 2),
+                    layer="usage",
+                    rule="low_source_usage_cap",
+                )
+            )
+
+        prompt_base = (visual_prompt * 0.5) + (text_prompt * 0.35) + (format_score * 0.15)
+        prompt_boosts, prompt_penalties = self._component_effects(
+            components=[
+                {
+                    "name": "visual_prompt",
+                    "label": "Visual output reflected the requested prompt themes",
+                    "reason_low": "Visual output missed part of the requested prompt themes",
+                    "value": visual_prompt,
+                    "weight": 0.5,
+                    "layer": "visual",
+                    "rule": "visual_prompt_component",
+                },
+                {
+                    "name": "text_prompt",
+                    "label": "Generated copy stayed close to the requested prompt framing",
+                    "reason_low": "Generated copy drifted from the requested prompt framing",
+                    "value": text_prompt,
+                    "weight": 0.35,
+                    "layer": "semantic",
+                    "rule": "text_prompt_component",
+                },
+                {
+                    "name": "format_fit",
+                    "label": "Output structure matched the requested format",
+                    "reason_low": "Output structure was weaker than the requested format expected",
+                    "value": format_score,
+                    "weight": 0.15,
+                    "layer": "format",
+                    "rule": "format_fit_component",
+                },
+            ]
+        )
+        prompt_penalties.extend(
+            self._explicit_rule_adjustments(
+                [
+                    {
+                        "applies": visual_prompt < 50 and text_prompt < 50,
+                        "impact": -10.0,
+                        "layer": "semantic",
+                        "rule": "dual_prompt_alignment_penalty",
+                        "reason": "Both visual and text prompt alignment were weak, so the prompt-adherence score was reduced.",
+                    }
+                ]
+            )
+        )
+
+        relevance_base = (
+            (context_score * 0.45)
+            + (quality_score * 0.3)
+            + (prompt_support * 0.15)
+            + (visual_quality * 0.10)
+        )
+        relevance_boosts, relevance_penalties = self._component_effects(
+            components=[
+                {
+                    "name": "context_score",
+                    "label": "Audience and objective context was reflected in the output",
+                    "reason_low": "Audience and objective context was underused in the output",
+                    "value": context_score,
+                    "weight": 0.45,
+                    "layer": "context",
+                    "rule": "context_score_component",
+                },
+                {
+                    "name": "quality_score",
+                    "label": "Clarity, proof, objection handling, and distinctiveness stayed strong",
+                    "reason_low": "Core quality dimensions fell below the neutral threshold",
+                    "value": quality_score,
+                    "weight": 0.3,
+                    "layer": "quality",
+                    "rule": "quality_score_component",
+                },
+                {
+                    "name": "prompt_support",
+                    "label": "Prompt support remained visible in the final output",
+                    "reason_low": "Prompt support weakened in the final output",
+                    "value": prompt_support,
+                    "weight": 0.15,
+                    "layer": "semantic",
+                    "rule": "prompt_support_component",
+                },
+                {
+                    "name": "visual_quality",
+                    "label": "Visual execution supported the relevance of the message",
+                    "reason_low": "Visual execution made the message feel less relevant",
+                    "value": visual_quality,
+                    "weight": 0.10,
+                    "layer": "visual",
+                    "rule": "visual_quality_component",
+                },
+            ]
+        )
+        relevance_penalties.extend(
+            self._explicit_rule_adjustments(
+                [
+                    {
+                        "applies": float(dimensions.get("distinctiveness") or 0.0) < 55,
+                        "impact": -6.0,
+                        "layer": "quality",
+                        "rule": "low_distinctiveness_penalty",
+                        "reason": "Distinctiveness fell below the guardrail, so the relevance score was reduced.",
+                    }
+                ]
+            )
+        )
+
+        overall_boosts, overall_penalties = self._component_effects(
+            components=[
+                {
+                    "name": "on_brand",
+                    "label": "On-brand performance lifted the overall score",
+                    "reason_low": "On-brand performance reduced the overall score",
+                    "value": on_brand,
+                    "weight": self.WEIGHTING["on_brand"],
+                    "layer": "on_brand",
+                    "rule": "overall_on_brand_component",
+                },
+                {
+                    "name": "prompt_adherence",
+                    "label": "Prompt adherence lifted the overall score",
+                    "reason_low": "Prompt adherence reduced the overall score",
+                    "value": prompt_adherence,
+                    "weight": self.WEIGHTING["prompt_adherence"],
+                    "layer": "prompt_adherence",
+                    "rule": "overall_prompt_adherence_component",
+                },
+                {
+                    "name": "relevance",
+                    "label": "Relevance lifted the overall score",
+                    "reason_low": "Relevance reduced the overall score",
+                    "value": relevance,
+                    "weight": self.WEIGHTING["relevance"],
+                    "layer": "relevance",
+                    "rule": "overall_relevance_component",
+                },
+            ]
+        )
+
         return {
             "overall": {
                 "formula": "overall = on_brand*0.4 + prompt_adherence*0.35 + relevance*0.25",
+                "base_score": round(
+                    (on_brand * self.WEIGHTING["on_brand"])
+                    + (prompt_adherence * self.WEIGHTING["prompt_adherence"])
+                    + (relevance * self.WEIGHTING["relevance"]),
+                    2,
+                ),
                 "computed_from": {
                     "on_brand": on_brand,
                     "prompt_adherence": prompt_adherence,
@@ -302,16 +701,21 @@ class BrandScoringService:
                     "prompt_adherence": round(prompt_adherence * self.WEIGHTING["prompt_adherence"], 2),
                     "relevance": round(relevance * self.WEIGHTING["relevance"], 2),
                 },
+                "boosts": overall_boosts,
+                "penalties": overall_penalties,
                 "final_score": overall_score,
             },
             "on_brand": {
                 "formula": "on_brand = visual_brand*0.5 + text_brand*0.35 + usage_score*0.15",
+                "base_score": round(on_brand_base, 2),
                 "score": on_brand,
                 "components": {
                     "visual_brand": round(visual_brand, 2),
                     "text_brand": round(text_brand, 2),
                     "usage_score": round(usage_score, 2),
                 },
+                "boosts": on_brand_boosts,
+                "penalties": on_brand_penalties,
                 "visual_details": {
                     "brand_alignment_score": int(visual_review.get("brand_alignment_score") or 0),
                     "style_alignment_score": int(visual_review.get("style_alignment_score") or 0),
@@ -321,6 +725,18 @@ class BrandScoringService:
                     "reference_similarity_score": int(visual_review.get("reference_similarity_score") or 0),
                     "aesthetic_consistency_score": int(visual_review.get("aesthetic_consistency_score") or 0),
                     "page_count": int(visual_review.get("page_count") or 0),
+                    "failed_checks": self._visual_check_failures(
+                        visual_review,
+                        fields=[
+                            ("brand_alignment_score", "Visual brand alignment was weak."),
+                            ("style_alignment_score", "Visual style alignment was weak."),
+                            ("mood_alignment_score", "Visual mood alignment was weak."),
+                            ("typography_alignment_score", "Typography alignment was weak."),
+                            ("motif_alignment_score", "Motif alignment was weak."),
+                            ("reference_similarity_score", "Reference similarity was weak."),
+                            ("aesthetic_consistency_score", "Aesthetic consistency was weak across pages."),
+                        ],
+                    ),
                 },
                 "text_details": {
                     "brand_alignment": int(dimensions.get("brand_alignment") or 0),
@@ -336,29 +752,58 @@ class BrandScoringService:
             },
             "prompt_adherence": {
                 "formula": "prompt_adherence = visual_prompt*0.5 + text_prompt*0.35 + format_fit*0.15",
+                "base_score": round(prompt_base, 2),
                 "score": prompt_adherence,
                 "components": {
                     "visual_prompt": round(visual_prompt, 2),
                     "text_prompt": round(text_prompt, 2),
                     "format_fit": round(format_score, 2),
                 },
+                "boosts": prompt_boosts,
+                "penalties": prompt_penalties,
                 "prompt_details": {
                     "prompt": prompt,
                     "generated_text_excerpt": generated_excerpt,
                     "matched_terms": matched_terms,
                     "missing_terms": missing_terms,
+                    "semantic_groups": {
+                        "matched": semantic_matched_terms[:8],
+                        "failed": semantic_missing_terms[:8],
+                        "coverage_percent": int(
+                            round(
+                                (
+                                    len(semantic_matched_terms)
+                                    / max(len(semantic_matched_terms) + len(semantic_missing_terms), 1)
+                                )
+                                * 100.0
+                            )
+                        ),
+                    },
+                    "format_diagnostics": format_diagnostics,
                     "format": str(studio_panel.get("format") or "").strip() or None,
                     "output_asset_count": len(output_assets),
+                    "visual_checks_failed": self._visual_check_failures(
+                        visual_review,
+                        fields=[
+                            ("prompt_alignment_score", "Visual prompt alignment was weak."),
+                            ("layout_readability_score", "Layout readability weakened prompt delivery."),
+                            ("density_score", "High density made prompt intent harder to read."),
+                            ("hierarchy_score", "Headline hierarchy did not support the prompt strongly enough."),
+                        ],
+                    ),
                 },
                 "reason": self._prompt_adherence_summary(
                     prompt_adherence,
+                    prompt=prompt,
                     visual_review=visual_review,
                     studio_panel=studio_panel,
                     output_assets=output_assets,
+                    generated_payload=generated_payload,
                 ),
             },
             "relevance": {
                 "formula": "relevance = context_score*0.45 + quality_score*0.3 + prompt_support*0.15 + visual_quality*0.10",
+                "base_score": round(relevance_base, 2),
                 "score": relevance,
                 "components": {
                     "context_score": round(context_score, 2),
@@ -366,19 +811,140 @@ class BrandScoringService:
                     "prompt_support": round(prompt_support, 2),
                     "visual_quality": round(visual_quality, 2),
                 },
+                "boosts": relevance_boosts,
+                "penalties": relevance_penalties,
                 "quality_dimensions": {
                     "clarity": int(dimensions.get("clarity") or 0),
                     "proof_strength": int(dimensions.get("proof_strength") or 0),
                     "objection_handling": int(dimensions.get("objection_handling") or 0),
                     "distinctiveness": int(dimensions.get("distinctiveness") or 0),
+                    "failed_dimensions": self._quality_dimension_failures(dimensions),
                 },
                 "context_reference_excerpt": context_reference[:300].strip(),
+                "visual_checks_failed": self._visual_check_failures(
+                    visual_review,
+                    fields=[
+                        ("layout_readability_score", "Visual readability weakened message relevance."),
+                        ("visual_diagnostic_score", "Visual diagnostic quality weakened message relevance."),
+                        ("page_balance_score", "Page balance weakened message emphasis."),
+                        ("crowding_score", "Crowding weakened message emphasis."),
+                    ],
+                ),
                 "reason": self._relevance_summary(
                     relevance,
                     tone_feedback=tone_feedback,
                 ),
             },
         }
+
+    @staticmethod
+    def _explanation_item(
+        *,
+        reason: str,
+        impact: float,
+        layer: str,
+        rule: str,
+    ) -> dict[str, Any]:
+        return {
+            "reason": reason,
+            "impact": round(float(impact), 2),
+            "layer": layer,
+            "rule": rule,
+        }
+
+    @classmethod
+    def _component_effects(cls, *, components: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        boosts: list[dict[str, Any]] = []
+        penalties: list[dict[str, Any]] = []
+        for component in components:
+            try:
+                value = float(component.get("value") or 0.0)
+                weight = float(component.get("weight") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            delta = round((value - 70.0) * weight, 2)
+            if delta > 0:
+                boosts.append(
+                    cls._explanation_item(
+                        reason=str(component.get("label") or "Positive scoring signal detected."),
+                        impact=delta,
+                        layer=str(component.get("layer") or "component"),
+                        rule=str(component.get("rule") or "component_boost"),
+                    )
+                )
+            elif delta < 0:
+                penalties.append(
+                    cls._explanation_item(
+                        reason=str(component.get("reason_low") or "Scoring signal fell below the neutral threshold."),
+                        impact=delta,
+                        layer=str(component.get("layer") or "component"),
+                        rule=str(component.get("rule") or "component_penalty"),
+                    )
+                )
+        return boosts, penalties
+
+    @classmethod
+    def _explicit_rule_adjustments(cls, adjustments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for adjustment in adjustments:
+            if not adjustment.get("applies"):
+                continue
+            items.append(
+                cls._explanation_item(
+                    reason=str(adjustment.get("reason") or "A scoring rule adjustment was applied."),
+                    impact=float(adjustment.get("impact") or 0.0),
+                    layer=str(adjustment.get("layer") or "rule"),
+                    rule=str(adjustment.get("rule") or "explicit_adjustment"),
+                )
+            )
+        return items
+
+    @staticmethod
+    def _visual_check_failures(
+        visual_review: dict[str, Any],
+        *,
+        fields: list[tuple[str, str]],
+        threshold: int = 60,
+    ) -> list[dict[str, Any]]:
+        failures: list[dict[str, Any]] = []
+        for field, message in fields:
+            value = int(visual_review.get(field) or 0)
+            if value >= threshold:
+                continue
+            failures.append(
+                {
+                    "check": field,
+                    "score": value,
+                    "threshold": threshold,
+                    "reason": message,
+                }
+            )
+        return failures[:8]
+
+    @staticmethod
+    def _quality_dimension_failures(dimensions: dict[str, Any], *, threshold: int = 60) -> list[dict[str, Any]]:
+        failures: list[dict[str, Any]] = []
+        labels = {
+            "clarity": "Message clarity was weak.",
+            "proof_strength": "Proof support was weak.",
+            "objection_handling": "Objection handling was weak.",
+            "distinctiveness": "Distinctiveness was weak.",
+            "cta_strength": "CTA strength was weak.",
+            "brand_alignment": "Brand alignment was weak.",
+        }
+        for key, message in labels.items():
+            value = int(dimensions.get(key) or 0)
+            if value >= threshold:
+                continue
+            failures.append(
+                {
+                    "dimension": key,
+                    "score": value,
+                    "threshold": threshold,
+                    "reason": message,
+                }
+            )
+        return failures[:8]
 
     @staticmethod
     def _usage_details(explainability: dict[str, Any]) -> dict[str, Any]:
@@ -420,9 +986,31 @@ class BrandScoringService:
                 if text and text not in missing_terms:
                     missing_terms.append(text)
         if not matched_terms and not missing_terms:
-            prompt_tokens = BrandScoringService._prompt_topic_tokens(prompt)
-            missing_terms = prompt_tokens[:6]
+            semantic_groups = BrandScoringService._prompt_semantic_groups(prompt)
+            if semantic_groups:
+                missing_terms = [str(group.get("label") or "").strip() for group in semantic_groups if str(group.get("label") or "").strip()][:6]
+            else:
+                prompt_tokens = BrandScoringService._prompt_topic_tokens(prompt)
+                missing_terms = prompt_tokens[:6]
         return matched_terms[:8], missing_terms[:8]
+
+    @classmethod
+    def _prompt_match_text(cls, text: str) -> str:
+        normalized = str(text or "").lower()
+        for canonical, aliases in cls.PROMPT_EQUIVALENT_PHRASES.items():
+            alias_pattern = "|".join(re.escape(alias) for alias in sorted(aliases, key=len, reverse=True))
+            normalized = re.sub(rf"\b(?:{alias_pattern})\b", canonical, normalized)
+        return re.sub(r"\s+", " ", normalized).strip()
+
+    @classmethod
+    def _prompt_match_token(cls, token: str) -> str:
+        lowered = str(token or "").strip().lower()
+        if not lowered:
+            return ""
+        for canonical, aliases in cls.PROMPT_EQUIVALENT_TOKENS.items():
+            if lowered == canonical or lowered in aliases:
+                return canonical
+        return lowered
 
     def _visual_review_for_assets(
         self,
@@ -677,14 +1265,17 @@ class BrandScoringService:
         studio_panel: dict[str, Any],
         visual_review: dict[str, Any],
         output_assets: list[dict[str, Any]],
+        generated_payload: dict[str, Any],
     ) -> int:
         text_prompt = float(self._prompt_alignment_score(prompt, combined_output_text, []))
         visual_prompt = float(visual_review.get("prompt_alignment_score") or text_prompt or 70.0)
         format_score = float(
             self._format_fit_score(
+                prompt=prompt,
                 studio_panel=studio_panel,
                 visual_review=visual_review,
                 output_assets=output_assets,
+                generated_payload=generated_payload,
             )
         )
         score = (visual_prompt * 0.5) + (text_prompt * 0.35) + (format_score * 0.15)
@@ -709,7 +1300,7 @@ class BrandScoringService:
             brand_context=brand_context,
         )
         if context_reference:
-            context_score = float(self._prompt_alignment_score(context_reference, combined_output_text, []))
+            context_score = float(self._context_alignment_score(context_reference, combined_output_text))
         else:
             context_score = 70.0
         dimensions = tone_feedback.get("persuasion_dimensions") if isinstance(tone_feedback.get("persuasion_dimensions"), dict) else {}
@@ -747,11 +1338,14 @@ class BrandScoringService:
     ) -> str:
         parts: list[str] = []
 
+        def append_text(text: str) -> None:
+            normalized = str(text or "").strip()
+            if normalized:
+                parts.append(normalized)
+
         def extend_from(value: Any) -> None:
             if isinstance(value, str):
-                text = value.strip()
-                if text:
-                    parts.append(text)
+                append_text(value)
                 return
             if isinstance(value, dict):
                 for key, nested in value.items():
@@ -763,10 +1357,62 @@ class BrandScoringService:
                 for nested in value:
                     extend_from(nested)
 
-        extend_from(persona_context)
-        extend_from(objective_context)
+        def extend_selected(mapping: dict[str, Any], keys: tuple[str, ...]) -> None:
+            for key in keys:
+                value = mapping.get(key)
+                if value is not None:
+                    extend_from(value)
+
+        extend_selected(
+            persona_context,
+            (
+                "name",
+                "audience_goals",
+                "pain_points",
+                "objections",
+                "desired_outcomes",
+                "trust_signals",
+                "proof_cues",
+                "comparison_points",
+            ),
+        )
+        objective_configuration = (
+            objective_context.get("configuration")
+            if isinstance(objective_context.get("configuration"), dict)
+            else {}
+        )
+        extend_selected(
+            objective_context,
+            (
+                "name",
+                "description",
+                "goal",
+                "summary",
+            ),
+        )
+        extend_selected(
+            objective_configuration,
+            (
+                "business_problem_or_opportunity",
+                "human_insight",
+                "market_positioning",
+                "buying_stage",
+            ),
+        )
         audience = brand_context.get("audience_insights") if isinstance(brand_context.get("audience_insights"), dict) else {}
-        extend_from(audience)
+        extend_selected(
+            audience,
+            (
+                "desired_outcomes",
+                "pain_points",
+                "objections",
+                "trust_signals",
+                "proof_cues",
+                "comparison_points",
+                "motivations",
+                "segments",
+            ),
+        )
         seen: set[str] = set()
         ordered: list[str] = []
         for part in parts:
@@ -775,35 +1421,574 @@ class BrandScoringService:
                 continue
             seen.add(normalized)
             ordered.append(part)
-        return " ".join(ordered[:30]).strip()
+        return " ".join(ordered[:20]).strip()
 
-    @staticmethod
+    @classmethod
     def _format_fit_score(
+        cls,
         *,
+        prompt: str = "",
         studio_panel: dict[str, Any],
         visual_review: dict[str, Any],
         output_assets: list[dict[str, Any]],
+        generated_payload: dict[str, Any] | None = None,
     ) -> int:
+        diagnostics = cls._format_fit_details(
+            prompt=prompt,
+            studio_panel=studio_panel,
+            visual_review=visual_review,
+            output_assets=output_assets,
+            generated_payload=generated_payload,
+        )
+        return int(diagnostics.get("score") or 0)
+
+    @classmethod
+    def _format_fit_details(
+        cls,
+        *,
+        prompt: str = "",
+        studio_panel: dict[str, Any],
+        visual_review: dict[str, Any],
+        output_assets: list[dict[str, Any]],
+        generated_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         format_name = str(studio_panel.get("format") or "").strip().lower()
+        page_reviews = [
+            page
+            for page in (visual_review.get("page_reviews") or [])
+            if isinstance(page, dict)
+        ]
         page_count = int(visual_review.get("page_count") or 0)
         asset_count = len(output_assets)
+        headline = cls._format_primary_text(generated_payload, preferred_keys=("headline", "title", "hook"))
+        cta = cls._format_primary_text(generated_payload, preferred_keys=("cta", "call_to_action"))
+        excerpts = [str(page.get("ocr_text_excerpt") or "").strip() for page in page_reviews if str(page.get("ocr_text_excerpt") or "").strip()]
+        combined_excerpt = " ".join(excerpts[:6]).strip()
+        combined_copy = cls._copy_text(generated_payload or {})
+        combined_text = " ".join(
+            part
+            for part in [headline, cta, combined_copy, combined_excerpt]
+            if str(part or "").strip()
+        ).strip()
+        first_page = page_reviews[0] if page_reviews else {}
+        prompt_groups = cls._prompt_semantic_groups(prompt)
+        checks: list[dict[str, Any]] = []
+
         if format_name == "carousel":
-            if page_count >= 3 or asset_count >= 3:
-                return 100
-            if page_count >= 2 or asset_count >= 2:
-                return 82
+            checks = [
+                {
+                    "name": "hook_strength",
+                    "reason": "Opening slide carries a clear hook and hierarchy.",
+                    "score": cls._format_hook_strength_score(first_page, headline, combined_excerpt=combined_excerpt),
+                },
+                {
+                    "name": "narrative_continuity",
+                    "reason": "Slides maintain a coherent narrative thread.",
+                    "score": cls._format_narrative_continuity_score(page_reviews),
+                },
+                {
+                    "name": "slide_progression",
+                    "reason": "Slide count and sequencing support carousel progression.",
+                    "score": cls._format_slide_progression_score(
+                        page_reviews,
+                        asset_count=asset_count,
+                        prompt_group_count=len(prompt_groups),
+                    ),
+                },
+                {
+                    "name": "pacing",
+                    "reason": "Slide pacing stays readable without becoming too sparse or too dense.",
+                    "score": cls._format_pacing_score(page_reviews),
+                },
+                {
+                    "name": "transition_logic",
+                    "reason": "Adjacent slides transition logically instead of feeling disconnected or repetitive.",
+                    "score": cls._format_transition_logic_score(page_reviews),
+                },
+                {
+                    "name": "content_coverage",
+                    "reason": "Carousel covers the requested ideas across the slide sequence.",
+                    "score": cls._format_prompt_coverage_score(
+                        prompt_groups,
+                        combined_text,
+                        format_name="carousel",
+                    ),
+                },
+            ]
+        elif format_name == "infographic":
+            checks = [
+                {
+                    "name": "headline_focus",
+                    "reason": "Infographic headline establishes the primary takeaway clearly.",
+                    "score": cls._format_hook_strength_score(first_page, headline, combined_excerpt=combined_excerpt),
+                },
+                {
+                    "name": "information_density",
+                    "reason": "Information density feels appropriate for an infographic.",
+                    "score": cls._format_infographic_density_score(
+                        first_page,
+                        visual_review,
+                        prompt_group_count=len(prompt_groups),
+                    ),
+                },
+                {
+                    "name": "scannability",
+                    "reason": "Content is easy to scan through hierarchy and readable sections.",
+                    "score": int(
+                        round(
+                            mean(
+                                [
+                                    float(visual_review.get("layout_readability_score") or 70.0),
+                                    float(visual_review.get("hierarchy_score") or 70.0),
+                                    float(visual_review.get("crowding_score") or 70.0),
+                                ]
+                            )
+                        )
+                    ),
+                },
+                {
+                    "name": "proof_content",
+                    "reason": "Infographic content includes concrete facts, proof, or statistics.",
+                    "score": cls._format_infographic_proof_score(generated_payload, combined_excerpt),
+                },
+                {
+                    "name": "section_structure",
+                    "reason": "Information is organized into clear content sections.",
+                    "score": cls._format_infographic_section_score(
+                        first_page,
+                        visual_review,
+                        prompt_group_count=len(prompt_groups),
+                    ),
+                },
+                {
+                    "name": "professional_layout",
+                    "reason": "Layout feels polished and professionally structured.",
+                    "score": int(
+                        round(
+                            mean(
+                                [
+                                    float(visual_review.get("page_balance_score") or 70.0),
+                                    float(visual_review.get("crowding_score") or 70.0),
+                                    float(visual_review.get("style_alignment_score") or 70.0),
+                                ]
+                            )
+                        )
+                    ),
+                },
+                {
+                    "name": "content_coverage",
+                    "reason": "Infographic covers the requested concepts in a scannable way.",
+                    "score": cls._format_prompt_coverage_score(
+                        prompt_groups,
+                        combined_text,
+                        format_name="infographic",
+                    ),
+                },
+            ]
+        elif format_name == "static":
+            checks = [
+                {
+                    "name": "headline_strength",
+                    "reason": "Static creative uses a strong headline with visible hierarchy.",
+                    "score": cls._format_hook_strength_score(first_page, headline, combined_excerpt=combined_excerpt),
+                },
+                {
+                    "name": "single_core_message",
+                    "reason": "Static creative stays focused on one core message.",
+                    "score": cls._format_single_message_score(
+                        first_page,
+                        page_count=page_count,
+                        prompt_group_count=len(prompt_groups),
+                        covered_group_count=cls._format_prompt_group_match_count(prompt_groups, combined_text),
+                    ),
+                },
+                {
+                    "name": "readability",
+                    "reason": "Static creative remains readable at a glance.",
+                    "score": int(visual_review.get("layout_readability_score") or 0),
+                },
+                {
+                    "name": "cta_clarity",
+                    "reason": "CTA is clear and action-oriented.",
+                    "score": cls._format_cta_score(cta, combined_text=combined_text, format_name="static"),
+                },
+                {
+                    "name": "professional_layout",
+                    "reason": "Layout looks professional and balanced.",
+                    "score": int(
+                        round(
+                            mean(
+                                [
+                                    float(visual_review.get("hierarchy_score") or 70.0),
+                                    float(visual_review.get("crowding_score") or 70.0),
+                                    float(visual_review.get("page_balance_score") or 70.0),
+                                ]
+                            )
+                        )
+                    ),
+                },
+                {
+                    "name": "content_distillation",
+                    "reason": "Static creative distills the requested idea into a clear takeaway.",
+                    "score": cls._format_prompt_coverage_score(
+                        prompt_groups,
+                        combined_text,
+                        format_name="static",
+                    ),
+                },
+            ]
+        else:
+            checks = [
+                {
+                    "name": "output_presence",
+                    "reason": "Requested format produced a usable output asset.",
+                    "score": 90 if page_count >= 1 or asset_count >= 1 else 60,
+                }
+            ]
+
+        if page_count <= 0 and asset_count <= 0:
+            return {
+                "format": format_name or None,
+                "score": 25,
+                "checks": [],
+                "failed_checks": [
+                    {
+                        "name": "output_presence",
+                        "score": 25,
+                        "threshold": 60,
+                        "reason": "No usable output assets were available for format evaluation.",
+                    }
+                ],
+            }
+
+        score = max(0, min(100, int(round(mean([float(check["score"]) for check in checks]))))) if checks else 60
+        failed_checks = [
+            {
+                "name": str(check.get("name") or ""),
+                "score": int(round(float(check.get("score") or 0.0))),
+                "threshold": 60,
+                "reason": str(check.get("reason") or ""),
+            }
+            for check in checks
+            if float(check.get("score") or 0.0) < 60.0
+        ]
+        return {
+            "format": format_name or None,
+            "score": score,
+            "checks": [
+                {
+                    "name": str(check.get("name") or ""),
+                    "score": int(round(float(check.get("score") or 0.0))),
+                    "reason": str(check.get("reason") or ""),
+                }
+                for check in checks
+            ],
+            "failed_checks": failed_checks[:8],
+        }
+
+    @staticmethod
+    def _format_primary_text(
+        payload: dict[str, Any] | None,
+        *,
+        preferred_keys: tuple[str, ...],
+    ) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        for key in preferred_keys:
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            if isinstance(value, list):
+                for item in value:
+                    if isinstance(item, str) and item.strip():
+                        return item.strip()
+        return ""
+
+    @staticmethod
+    def _format_word_count(text: str) -> int:
+        return len(re.findall(r"\b\w+\b", str(text or "")))
+
+    @classmethod
+    def _format_hook_strength_score(cls, page_review: dict[str, Any], headline: str, *, combined_excerpt: str = "") -> int:
+        visible_headline = str(headline or "").strip()
+        if not visible_headline and combined_excerpt:
+            first_line = next((line.strip() for line in combined_excerpt.splitlines() if line.strip()), "")
+            visible_headline = first_line or " ".join(combined_excerpt.split()[:10]).strip()
+        headline_words = cls._format_word_count(visible_headline)
+        if headline_words == 0:
+            headline_score = 35.0
+        elif 3 <= headline_words <= 10:
+            headline_score = 92.0
+        elif headline_words <= 14:
+            headline_score = 78.0
+        else:
+            headline_score = 55.0
+        hierarchy_score = float(page_review.get("hierarchy_score") or 70.0)
+        prompt_score = float(page_review.get("prompt_alignment_score") or 70.0)
+        return max(0, min(100, int(round(mean([headline_score, hierarchy_score, prompt_score])))))
+
+    @classmethod
+    def _format_single_message_score(
+        cls,
+        page_review: dict[str, Any],
+        *,
+        page_count: int,
+        prompt_group_count: int = 0,
+        covered_group_count: int = 0,
+    ) -> int:
+        if page_count > 1:
             return 45
-        if format_name == "infographic":
-            if page_count >= 1 or asset_count >= 1:
-                return 100
-            return 50
-        if format_name == "static":
-            if page_count >= 1 or asset_count >= 1:
-                return 100
-            return 55
-        if page_count >= 1 or asset_count >= 1:
+        word_count = int(page_review.get("word_count") or 0)
+        if word_count == 0:
+            return 40
+        if word_count <= 45:
+            base_score = 94
+        elif word_count <= 70:
+            base_score = 80
+        elif word_count <= 95:
+            base_score = 62
+        else:
+            base_score = 44
+        if prompt_group_count >= 4 and covered_group_count <= 2:
+            base_score -= 10
+        elif prompt_group_count >= 3 and covered_group_count >= 2:
+            base_score += 4
+        return max(0, min(100, int(round(base_score))))
+
+    @classmethod
+    def _format_cta_score(cls, cta: str, *, combined_text: str = "", format_name: str = "") -> int:
+        normalized = str(cta or "").strip()
+        if not normalized and combined_text:
+            match = cls.FORMAT_CTA_PATTERN.search(combined_text)
+            if match:
+                normalized = str(match.group(0) or "").strip()
+        if not normalized:
+            if format_name in {"static", "infographic"} and re.search(
+                r"\b(beginner|compare|difference|understand|choose|decide|learn)\b",
+                combined_text,
+                flags=re.IGNORECASE,
+            ):
+                return 58
+            return 38
+        lowered = normalized.lower()
+        score = 65.0
+        if cls.FORMAT_CTA_PATTERN.search(normalized):
+            score += 20.0
+        if lowered in cls.FORMAT_GENERIC_CTA_PHRASES:
+            score -= 12.0
+        if 2 <= cls._format_word_count(normalized) <= 8:
+            score += 8.0
+        return max(0, min(100, int(round(score))))
+
+    @staticmethod
+    def _format_token_overlap(left: str, right: str) -> float:
+        left_tokens = {token.lower() for token in re.findall(r"[A-Za-z0-9]+", left or "") if len(token) > 2}
+        right_tokens = {token.lower() for token in re.findall(r"[A-Za-z0-9]+", right or "") if len(token) > 2}
+        if not left_tokens or not right_tokens:
+            return 0.0
+        return len(left_tokens & right_tokens) / max(len(left_tokens | right_tokens), 1)
+
+    @classmethod
+    def _format_narrative_continuity_score(cls, page_reviews: list[dict[str, Any]]) -> int:
+        excerpts = [str(page.get("ocr_text_excerpt") or "").strip() for page in page_reviews if str(page.get("ocr_text_excerpt") or "").strip()]
+        if len(excerpts) <= 1:
+            return 45
+        overlaps = [cls._format_token_overlap(left, right) for left, right in zip(excerpts, excerpts[1:])]
+        prompt_alignments = [float(page.get("prompt_alignment_score") or 0.0) for page in page_reviews if float(page.get("prompt_alignment_score") or 0.0) > 0]
+        if not overlaps:
+            return max(55, int(round(mean(prompt_alignments)))) if prompt_alignments else 55
+        mapped = []
+        for overlap in overlaps:
+            if 0.12 <= overlap <= 0.45:
+                mapped.append(90.0)
+            elif 0.06 <= overlap < 0.12 or 0.45 < overlap <= 0.62:
+                mapped.append(74.0)
+            else:
+                mapped.append(52.0 if overlap > 0 else 38.0)
+        overlap_score = mean(mapped)
+        if prompt_alignments:
+            overlap_score = (overlap_score * 0.45) + (mean(prompt_alignments) * 0.55)
+        return max(0, min(100, int(round(overlap_score))))
+
+    @staticmethod
+    def _format_slide_progression_score(
+        page_reviews: list[dict[str, Any]],
+        *,
+        asset_count: int,
+        prompt_group_count: int = 0,
+    ) -> int:
+        slide_count = max(len(page_reviews), asset_count)
+        if prompt_group_count >= 5:
+            if slide_count >= 5:
+                return 94
+            if slide_count == 4:
+                return 82
+            if slide_count == 3:
+                return 68
+            if slide_count == 2:
+                return 52
+            return 34
+        if prompt_group_count >= 3:
+            if slide_count >= 4:
+                return 92
+            if slide_count == 3:
+                return 84
+            if slide_count == 2:
+                return 62
+            if slide_count == 1:
+                return 38
+            return 25
+        if slide_count >= 3:
             return 90
-        return 60
+        if slide_count == 2:
+            return 76
+        if slide_count == 1:
+            return 45
+        return 25
+
+    @staticmethod
+    def _format_pacing_score(page_reviews: list[dict[str, Any]]) -> int:
+        word_counts = [int(page.get("word_count") or 0) for page in page_reviews if int(page.get("word_count") or 0) > 0]
+        if not word_counts:
+            return 45
+        per_slide_scores: list[float] = []
+        for count in word_counts:
+            if 12 <= count <= 45:
+                per_slide_scores.append(92.0)
+            elif 8 <= count < 12 or 46 <= count <= 65:
+                per_slide_scores.append(76.0)
+            elif 4 <= count < 8 or 66 <= count <= 90:
+                per_slide_scores.append(58.0)
+            else:
+                per_slide_scores.append(42.0)
+        return max(0, min(100, int(round(mean(per_slide_scores)))))
+
+    @classmethod
+    def _format_transition_logic_score(cls, page_reviews: list[dict[str, Any]]) -> int:
+        excerpts = [str(page.get("ocr_text_excerpt") or "").strip() for page in page_reviews if str(page.get("ocr_text_excerpt") or "").strip()]
+        if len(excerpts) <= 1:
+            return 45
+        continuity = cls._format_narrative_continuity_score(page_reviews)
+        unique_ratio = len({excerpt.casefold() for excerpt in excerpts}) / max(len(excerpts), 1)
+        if unique_ratio >= 0.95:
+            uniqueness_score = 86.0
+        elif unique_ratio >= 0.75:
+            uniqueness_score = 74.0
+        else:
+            uniqueness_score = 55.0
+        return max(0, min(100, int(round(mean([continuity, uniqueness_score])))))
+
+    @staticmethod
+    def _format_infographic_density_score(
+        page_review: dict[str, Any],
+        visual_review: dict[str, Any],
+        *,
+        prompt_group_count: int = 0,
+    ) -> int:
+        word_count = int(page_review.get("word_count") or 0)
+        density_score = float(visual_review.get("density_score") or 70.0)
+        if word_count == 0:
+            content_score = 40.0
+        elif 25 <= word_count <= 120:
+            content_score = 92.0
+        elif 16 <= word_count < 25 or 121 <= word_count <= 155:
+            content_score = 76.0
+        else:
+            content_score = 55.0
+        if prompt_group_count >= 4 and word_count < 28:
+            content_score -= 12.0
+        return max(0, min(100, int(round(mean([content_score, density_score])))))
+
+    @classmethod
+    def _format_infographic_proof_score(cls, generated_payload: dict[str, Any] | None, combined_excerpt: str) -> int:
+        text_parts: list[str] = [combined_excerpt]
+        if isinstance(generated_payload, dict):
+            for key in ("body", "headline", "proof_points", "stat_highlights", "supporting_line"):
+                value = generated_payload.get(key)
+                if isinstance(value, str):
+                    text_parts.append(value)
+                elif isinstance(value, list):
+                    text_parts.extend(str(item) for item in value if str(item).strip())
+        blob = " ".join(part for part in text_parts if str(part or "").strip())
+        if not blob.strip():
+            return 40
+        if cls.FORMAT_PROOF_PATTERN.search(blob) or re.search(r"\d+(?:\.\d+)?%|\b\d+(?:\.\d+)?\s*(?:percent|percentage)\b", blob, flags=re.IGNORECASE):
+            return 94
+        if re.search(r"\b(data|proof|results|evidence|benchmark|study|verified|measured)\b", blob, flags=re.IGNORECASE):
+            return 76
+        return 52
+
+    @staticmethod
+    def _format_infographic_section_score(
+        page_review: dict[str, Any],
+        visual_review: dict[str, Any],
+        *,
+        prompt_group_count: int = 0,
+    ) -> int:
+        text_boxes = int(page_review.get("text_box_count") or 0)
+        hierarchy = float(visual_review.get("hierarchy_score") or 70.0)
+        balance = float(visual_review.get("page_balance_score") or 70.0)
+        if text_boxes >= 4:
+            section_score = 90.0
+        elif text_boxes == 3:
+            section_score = 78.0
+        elif text_boxes == 2:
+            section_score = 64.0
+        elif text_boxes == 1:
+            section_score = 48.0
+        else:
+            section_score = 36.0
+        if prompt_group_count >= 4 and text_boxes < 3:
+            section_score -= 14.0
+        return max(0, min(100, int(round(mean([section_score, hierarchy, balance])))))
+
+    @classmethod
+    def _format_prompt_group_match_count(cls, prompt_groups: list[dict[str, Any]], combined_text: str) -> int:
+        if not prompt_groups or not combined_text.strip():
+            return 0
+        observed_blob = cls._prompt_match_text(combined_text)
+        return sum(1 for group in prompt_groups if cls._semantic_group_matches(group, observed_blob))
+
+    @classmethod
+    def _format_prompt_coverage_score(
+        cls,
+        prompt_groups: list[dict[str, Any]],
+        combined_text: str,
+        *,
+        format_name: str,
+    ) -> int:
+        if not prompt_groups:
+            return 78
+        observed_blob = cls._prompt_match_text(combined_text)
+        if not observed_blob:
+            return 35
+        total_weight = sum(float(group.get("weight") or 1.0) for group in prompt_groups) or 1.0
+        matched_weight = sum(
+            float(group.get("weight") or 1.0)
+            for group in prompt_groups
+            if cls._semantic_group_matches(group, observed_blob)
+        )
+        coverage_ratio = matched_weight / total_weight
+        base_score = {
+            "static": 38.0,
+            "infographic": 34.0,
+            "carousel": 30.0,
+        }.get(format_name, 36.0)
+        multiplier = {
+            "static": 54.0,
+            "infographic": 58.0,
+            "carousel": 62.0,
+        }.get(format_name, 56.0)
+        score = base_score + (coverage_ratio * multiplier)
+        if format_name == "static" and len(prompt_groups) <= 2 and coverage_ratio >= 0.9:
+            score += 4.0
+        if format_name == "static" and len(prompt_groups) >= 4 and coverage_ratio < 0.6:
+            score -= 6.0
+        if format_name == "carousel" and len(prompt_groups) >= 4 and coverage_ratio < 0.55:
+            score -= 8.0
+        if format_name == "infographic" and len(prompt_groups) >= 4 and coverage_ratio < 0.6:
+            score -= 5.0
+        return max(0, min(100, int(round(score))))
 
     @staticmethod
     def _metric_phrase(label: str) -> str:
@@ -856,14 +2041,18 @@ class BrandScoringService:
         cls,
         score: int,
         *,
+        prompt: str,
         visual_review: dict[str, Any],
         studio_panel: dict[str, Any],
         output_assets: list[dict[str, Any]],
+        generated_payload: dict[str, Any] | None = None,
     ) -> str:
         format_score = cls._format_fit_score(
+            prompt=prompt,
             studio_panel=studio_panel,
             visual_review=visual_review,
             output_assets=output_assets,
+            generated_payload=generated_payload,
         )
         missing_terms: list[str] = []
         for page in visual_review.get("page_reviews") or []:
@@ -926,7 +2115,9 @@ class BrandScoringService:
     def _prompt_topic_tokens(cls, prompt: str, *, limit: int = 12) -> list[str]:
         tokens: list[str] = []
         seen: set[str] = set()
-        for token in re.findall(r"[A-Za-z][A-Za-z0-9'-]{2,}", str(prompt or "").lower()):
+        normalized_prompt = cls._prompt_match_text(prompt)
+        for token in re.findall(r"[A-Za-z][A-Za-z0-9'-]{2,}", normalized_prompt):
+            token = cls._prompt_match_token(token)
             if token in cls.TOPIC_STOPWORDS or token in seen:
                 continue
             seen.add(token)
@@ -1322,6 +2513,18 @@ class BrandScoringService:
 
     @classmethod
     def _prompt_term_diagnostics(cls, expected_prompt: str, observed_text: str, labels: list[str]) -> tuple[list[str], list[str]]:
+        semantic_groups = cls._prompt_semantic_groups(expected_prompt)
+        observed_blob = cls._prompt_match_text(f"{observed_text} {' '.join(labels)}")
+        matched: list[str] = []
+        missing: list[str] = []
+        for group in semantic_groups:
+            if cls._semantic_group_matches(group, observed_blob):
+                matched.append(str(group.get("label") or ""))
+            else:
+                missing.append(str(group.get("label") or ""))
+        if semantic_groups:
+            return matched[:10], missing[:10]
+
         prompt_tokens = []
         for token in cls._prompt_topic_tokens(expected_prompt):
             if token not in prompt_tokens:
@@ -1330,6 +2533,95 @@ class BrandScoringService:
         matched = [token for token in prompt_tokens if token in observed_tokens]
         missing = [token for token in prompt_tokens if token not in observed_tokens]
         return matched, missing
+
+    @classmethod
+    def _prompt_semantic_groups(cls, prompt: str) -> list[dict[str, Any]]:
+        prompt_text = cls._prompt_match_text(prompt)
+        groups: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        def add_group(label: str, aliases: tuple[str, ...], weight: float) -> None:
+            normalized_label = cls._normalized_signal(label)
+            if not normalized_label or normalized_label in seen:
+                return
+            seen.add(normalized_label)
+            groups.append(
+                {
+                    "label": label,
+                    "aliases": tuple(alias for alias in aliases if str(alias).strip()),
+                    "weight": float(weight),
+                }
+            )
+
+        for rule in cls.PROMPT_SEMANTIC_GROUP_PATTERNS:
+            if rule["pattern"].search(prompt_text):
+                add_group(str(rule["label"]), tuple(rule["aliases"]), float(rule["weight"]))
+
+        phrase_matches: list[str] = []
+        for match in re.finditer(r"\b([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,3}\s+Bonds?)\b", prompt):
+            phrase = str(match.group(1) or "").strip()
+            if phrase:
+                phrase_matches.append(phrase)
+        for phrase in phrase_matches:
+            normalized_phrase = cls._prompt_match_text(phrase)
+            add_group(phrase, (normalized_phrase,), 1.25)
+
+        if groups:
+            return groups[:12]
+
+        for token in cls._prompt_topic_tokens(prompt, limit=16):
+            if token in cls.PROMPT_GENERIC_CONTENT_WORDS:
+                continue
+            add_group(token, (token,), 0.75)
+
+        return groups[:12]
+
+    @classmethod
+    def _semantic_group_matches(cls, group: dict[str, Any], observed_blob: str) -> bool:
+        aliases = tuple(str(alias).strip().lower() for alias in (group.get("aliases") or ()) if str(alias).strip())
+        if not aliases:
+            return False
+        normalized_observed = cls._normalized_signal(observed_blob)
+        observed_tokens = {
+            cls._prompt_match_token(token)
+            for token in normalized_observed.split()
+            if cls._prompt_match_token(token)
+        }
+        for alias in aliases:
+            alias_normalized = cls._normalized_signal(alias)
+            if not alias_normalized:
+                continue
+            if alias_normalized in normalized_observed:
+                return True
+            alias_tokens = {
+                cls._prompt_match_token(token)
+                for token in alias_normalized.split()
+                if cls._prompt_match_token(token)
+            }
+            if len(alias_tokens) == 1 and alias_tokens & observed_tokens:
+                return True
+        return False
+
+    @classmethod
+    def _context_alignment_score(cls, context_reference: str, observed_text: str) -> int:
+        semantic_groups = cls._prompt_semantic_groups(context_reference)
+        observed_blob = cls._prompt_match_text(observed_text)
+        if semantic_groups:
+            total_weight = sum(float(group.get("weight") or 1.0) for group in semantic_groups) or 1.0
+            matched_weight = sum(
+                float(group.get("weight") or 1.0)
+                for group in semantic_groups
+                if cls._semantic_group_matches(group, observed_blob)
+            )
+            semantic_score = (matched_weight / total_weight) * 100.0
+        else:
+            semantic_score = 0.0
+        token_score = cls._prompt_alignment_score(context_reference, observed_text, [], use_semantic_groups=False)
+        if semantic_groups:
+            score = (semantic_score * 0.7) + (token_score * 0.3)
+        else:
+            score = token_score
+        return max(0, min(100, int(round(score))))
 
     @staticmethod
     def _layout_region_diagnostics(
@@ -1459,14 +2751,37 @@ class BrandScoringService:
         return findings
 
     @classmethod
-    def _prompt_alignment_score(cls, expected_prompt: str, observed_text: str, labels: list[str]) -> int:
+    def _prompt_alignment_score(
+        cls,
+        expected_prompt: str,
+        observed_text: str,
+        labels: list[str],
+        *,
+        use_semantic_groups: bool = True,
+    ) -> int:
         prompt_tokens = set(cls._prompt_topic_tokens(expected_prompt))
         if not prompt_tokens:
             return 100
         observed_tokens = set(cls._prompt_topic_tokens(f"{observed_text} {' '.join(labels)}", limit=24))
         overlap = len(prompt_tokens & observed_tokens)
         label_overlap_bonus = 1 if any(token in " ".join(labels).lower() for token in prompt_tokens) else 0
-        score = ((overlap + label_overlap_bonus) / max(len(prompt_tokens), 1)) * 100.0
+        token_score = ((overlap + label_overlap_bonus) / max(len(prompt_tokens), 1)) * 100.0
+        if not use_semantic_groups:
+            return max(0, min(100, int(round(token_score))))
+
+        semantic_groups = cls._prompt_semantic_groups(expected_prompt)
+        if semantic_groups:
+            observed_blob = cls._prompt_match_text(f"{observed_text} {' '.join(labels)}")
+            total_weight = sum(float(group.get("weight") or 1.0) for group in semantic_groups) or 1.0
+            matched_weight = sum(
+                float(group.get("weight") or 1.0)
+                for group in semantic_groups
+                if cls._semantic_group_matches(group, observed_blob)
+            )
+            semantic_score = (matched_weight / total_weight) * 100.0
+            score = (semantic_score * 0.6) + (token_score * 0.4)
+        else:
+            score = token_score
         return max(0, min(100, int(round(score))))
 
     @staticmethod

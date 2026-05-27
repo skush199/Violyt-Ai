@@ -1364,6 +1364,7 @@ class GenerationTraceService:
         research_editorial_brief: dict[str, Any],
         explainability: dict[str, Any],
     ) -> dict[str, Any]:
+        template_context = template_context if isinstance(template_context, dict) else {}
         layout_decision = explainability.get("layout_decision") if isinstance(explainability.get("layout_decision"), dict) else {}
         creative_decision = explainability.get("creative_decision") if isinstance(explainability.get("creative_decision"), dict) else {}
         sample_editorial_brief = (
@@ -3245,6 +3246,7 @@ class GenerationTraceService:
         explainability: dict[str, Any],
     ) -> dict[str, dict[str, Any]]:
         explainability = explainability if isinstance(explainability, dict) else {}
+        template_context = template_context if isinstance(template_context, dict) else {}
         research_editorial_brief = (
             explainability.get("research_editorial_brief")
             if isinstance(explainability.get("research_editorial_brief"), dict)

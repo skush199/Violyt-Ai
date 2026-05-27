@@ -58,6 +58,11 @@ def test_brand_scoring_service_builds_deterministic_scorecard() -> None:
     assert set(scorecard["developer_explanation"].keys()) == {"overall", "on_brand", "prompt_adherence", "relevance"}
     assert "formula" in scorecard["developer_explanation"]["on_brand"]
     assert "components" in scorecard["developer_explanation"]["prompt_adherence"]
+    assert "base_score" in scorecard["developer_explanation"]["overall"]
+    assert "boosts" in scorecard["developer_explanation"]["on_brand"]
+    assert "penalties" in scorecard["developer_explanation"]["prompt_adherence"]
+    assert "semantic_groups" in scorecard["developer_explanation"]["prompt_adherence"]["prompt_details"]
+    assert "visual_checks_failed" in scorecard["developer_explanation"]["relevance"]
 
 
 def test_brand_scoring_service_saves_json_to_brand_scoring_folder() -> None:
