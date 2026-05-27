@@ -36,7 +36,7 @@ from app.ai.layout_decision import LayoutDecisionEngine
 from app.ai.orchestrator import AIOrchestratorService
 from app.ai.session_memory import SessionMemoryPlanner
 from app.ai.tone_intelligence import ToneIntelligenceService
-from app.core.enums import AssetRole, BrandSpaceLifecycle
+from app.core.enums import AssetRole, BrandSpaceLifecycle, JobType
 from app.core.enums import ContentLifecycle, KnowledgeChannel, UsageMetricCode
 from app.core.exceptions import GenerationFailureError, LifecycleError, NotFoundError
 from app.core.studio import resolve_studio_panel_defaults
@@ -60,6 +60,7 @@ from app.services.renderer import RendererService
 from app.services.research_editorial_planning import ResearchEditorialPlanningService
 from app.services.template import TemplateService
 from app.services.usage import UsageLimitService
+from app.services.jobs import JobService
 from app.services.visual_planning import VisualPlanningService
 from app.utils.input_access_tracking import InputAccessTracker
 from app.utils.image_assets import open_image_asset
@@ -231,21 +232,36 @@ class ContentService:
         self.trace = GenerationTraceService()
         self.storage = LocalObjectStorage()
 
-    @staticmethod
-    def _run_ragas_evaluation_for_trace(trace_id: str) -> None:
-        from scripts.ragas_evaluation import DEFAULT_OUTPUT_DIR, DEFAULT_TRACE_ROOT, evaluate_traces
-
-        evaluate_traces(DEFAULT_TRACE_ROOT, DEFAULT_OUTPUT_DIR, trace_id)
-
-    async def _run_ragas_evaluation_after_generation(self, trace_id: str | None, *, generated_image_count: int) -> None:
+    async def _enqueue_ragas_evaluation_after_generation(
+        self,
+        trace_id: str | None,
+        *,
+        tenant_id: UUID,
+        brand_space_id: UUID,
+        content_version_id: UUID,
+        generated_image_count: int,
+    ) -> None:
         if not trace_id or generated_image_count <= 0:
             return
 
         try:
-            await asyncio.to_thread(self._run_ragas_evaluation_for_trace, trace_id)
-            logger.info("content.generate.ragas_evaluation_complete trace_id=%s", trace_id)
+            job = await JobService(self.session).create(
+                tenant_id=tenant_id,
+                brand_space_id=brand_space_id,
+                content_version_id=content_version_id,
+                job_type=JobType.RAGAS_EVALUATION,
+                payload={
+                    "trace_id": trace_id,
+                    "generated_image_count": generated_image_count,
+                },
+            )
+            logger.info(
+                "content.generate.ragas_evaluation_queued trace_id=%s job_id=%s",
+                trace_id,
+                job.id,
+            )
         except Exception:
-            logger.exception("content.generate.ragas_evaluation_failed trace_id=%s", trace_id)
+            logger.exception("content.generate.ragas_evaluation_queue_failed trace_id=%s", trace_id)
 
     @staticmethod
     def _merge_studio_panel(base: dict | None, override: dict | None) -> dict:
@@ -3091,8 +3107,12 @@ class ContentService:
                 continue
             try:
                 with open_image_asset(self.storage.absolute_path(storage_path)) as raw_logo:
+                    logo_source = self._resize_logo_source_for_overlay(
+                        raw_logo,
+                        target_box=logo_box,
+                    )
                     prepared_logo = self._trim_transparent_logo_margins(
-                        self._strip_logo_background_if_safe(raw_logo.convert("RGBA"))
+                        self._strip_logo_background_if_safe(logo_source)
                     )
             except OSError:
                 continue
@@ -6026,6 +6046,24 @@ class ContentService:
         return cleaned
 
     @staticmethod
+    def _resize_logo_source_for_overlay(
+        image: Image.Image,
+        *,
+        target_box: tuple[int, int, int, int] | None = None,
+    ) -> Image.Image:
+        rgba = image.convert("RGBA")
+        target_width = int((target_box or (0, 0, 0, 0))[2] or 0)
+        target_height = int((target_box or (0, 0, 0, 0))[3] or 0)
+        target_side = max(target_width, target_height, 96)
+        max_side = max(512, min(2048, target_side * 6))
+        current_side = max(rgba.size)
+        if current_side <= max_side:
+            return rgba
+        resized = rgba.copy()
+        resized.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+        return resized
+
+    @staticmethod
     def _flatten_image_for_jpg(image: Image.Image) -> Image.Image:
         if image.mode != "RGBA":
             return image.convert("RGB")
@@ -8306,7 +8344,10 @@ class ContentService:
             resolved_logo_asset_path = logo_asset_path
         try:
             with open_image_asset(self.storage.absolute_path(resolved_logo_asset_path)) as raw_logo:
-                raw_logo_rgba = raw_logo.convert("RGBA")
+                raw_logo_rgba = self._resize_logo_source_for_overlay(
+                    raw_logo,
+                    target_box=logo_box,
+                )
                 # Strip the logo background first, then decide whether clearance is needed.
                 # Checking the RAW logo was wrong: even if the raw file had a solid white
                 # background, _strip_logo_background_if_safe removes it, leaving a
@@ -8317,9 +8358,9 @@ class ContentService:
                     self._strip_logo_background_if_safe(raw_logo_rgba)
                 )
                 # Determine if the logo is effectively transparent AFTER stripping.
-                logo_pixels = list(logo.getdata())
-                total_pixels = len(logo_pixels)
-                transparent_pixels = sum(1 for p in logo_pixels if p[3] < 30)
+                alpha_histogram = logo.getchannel("A").histogram()
+                total_pixels = max(logo.width * logo.height, 1)
+                transparent_pixels = sum(alpha_histogram[:30])
                 logo_is_transparent_after_strip = total_pixels > 0 and (transparent_pixels / total_pixels) >= 0.25
         except OSError:
             logger.warning(
@@ -9224,8 +9265,12 @@ class ContentService:
             template_context=template_context,
             planning_hints=planning_hints,
             content_version=content_version,
-        await self._run_ragas_evaluation_after_generation(
+        )
+        await self._enqueue_ragas_evaluation_after_generation(
             trace_id,
+            tenant_id=tenant_id,
+            brand_space_id=brand_space_id,
+            content_version_id=content_version.id,
             generated_image_count=len(persisted_final_render_assets) or len(response.image_assets),
         )
         return content_version

@@ -29,6 +29,8 @@ from app.services.text_content import TextContentService
 
 logger = logging.getLogger(__name__)
 
+CHAT_HISTORY_MESSAGE_LIMIT = 30
+
 
 class ChatService:
     VISUAL_REGENERATION_MARKER = "Revise the existing creative with this instruction:"
@@ -169,11 +171,8 @@ class ChatService:
         return session
 
     async def list_messages(self, session_id: UUID) -> list[ChatMessage]:
-        session = await self.get_session(session_id)
-        items = await self.messages.list_by_session(session_id)
-        if await self.backfill_content_history_messages(session, items):
-            await self.session.commit()
-            items = await self.messages.list_by_session(session_id)
+        await self.get_session(session_id)
+        items = await self.messages.list_recent_by_session(session_id, limit=CHAT_HISTORY_MESSAGE_LIMIT)
         for item in items:
             item.structured_payload = self.decorate_structured_payload_assets(item.structured_payload or {})
         return items
@@ -585,17 +584,12 @@ class ChatService:
                         "mode": "visual_generation",
                         "content_version_id": str(content_version.id),
                         "generated_payload": content_version.generated_payload,
-                        "blueprint_payload": content_version.blueprint_payload,
                         "generation_decision": generation_decision,
-                        "creative_decision": content_version.explainability_metadata.get("creative_decision", {}),
-                        "scene_graph": content_version.explainability_metadata.get("scene_graph", {}),
-                        "validation_report": content_version.explainability_metadata.get("validation_report", {}),
                         "repair_attempts": content_version.explainability_metadata.get("repair_attempts", 0),
                         "tone_feedback": content_version.tone_feedback,
                         "assets": serialized_assets,
                         "preview_asset": render_payload.get("preview_asset") if render_payload else None,
                         "export_assets": render_payload.get("export_assets", []) if render_payload else [],
-                        "renderer_metadata": render_payload.get("renderer_metadata", {}) if render_payload else {},
                         "image_generation_requested": payload.generate_image,
                         "image_generation_status": "generated" if image_asset_count else "not_generated",
                         "image_asset_count": image_asset_count,
@@ -804,17 +798,12 @@ class ChatService:
             {
                 "content_version_id": str(content_version.id),
                 "generated_payload": content_version.generated_payload or {},
-                "blueprint_payload": content_version.blueprint_payload or {},
                 "generation_decision": cls.decorate_generation_decision(raw_generation_decision),
-                "creative_decision": explainability.get("creative_decision", {}),
-                "scene_graph": explainability.get("scene_graph", {}),
-                "validation_report": explainability.get("validation_report", {}),
                 "repair_attempts": explainability.get("repair_attempts", 0),
                 "tone_feedback": content_version.tone_feedback or {},
                 "assets": serialized_assets,
                 "preview_asset": None,
                 "export_assets": [],
-                "renderer_metadata": {},
                 "image_generation_requested": bool(image_asset_count),
                 "image_generation_status": "generated" if image_asset_count else "not_generated",
                 "image_asset_count": image_asset_count,
@@ -902,6 +891,14 @@ class ChatService:
         if not isinstance(payload, dict):
             return payload
         decorated = dict(payload)
+        for heavy_key in (
+            "blueprint_payload",
+            "creative_decision",
+            "scene_graph",
+            "validation_report",
+            "renderer_metadata",
+        ):
+            decorated.pop(heavy_key, None)
         if isinstance(decorated.get("preview_asset"), dict):
             preview_asset = cls._decorate_asset_ref(decorated["preview_asset"])
             decorated["preview_asset"] = preview_asset if preview_asset.get("asset_url") else None
