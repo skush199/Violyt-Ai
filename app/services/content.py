@@ -4158,6 +4158,8 @@ class ContentService:
         slide_count: int,
         hints: list[object] | None = None,
     ) -> str:
+        if slide_index == 1 and slide_count > 1:
+            return "hook"
         hint_text = " ".join(str(item or "").strip().casefold() for item in (hints or []) if str(item or "").strip())
         if any(token in hint_text for token in ("undercovered", "missed", "overlooked", "not tell", "hidden angle")):
             return "undercovered_angle"
@@ -4169,8 +4171,6 @@ class ContentService:
             return "context"
         if any(token in hint_text for token in ("takeaway", "what to watch", "what next", "closing", "cta", "final")):
             return "takeaway"
-        if slide_index == 1:
-            return "hook"
         if slide_index == slide_count:
             return "takeaway"
         if slide_count == 3 and slide_index == 2:
@@ -4346,6 +4346,203 @@ class ContentService:
             logger.debug("content.reference_pdf.pymupdf_failed path=%s", str(resolved_path), exc_info=True)
 
         return pages
+
+    @classmethod
+    def _reference_pdf_page_editorial_hints(
+        cls,
+        storage_path: str,
+        *,
+        storage: object | None = None,
+    ) -> list[dict[str, Any]]:
+        path_hint = str(storage_path or "").strip()
+        if not path_hint:
+            return []
+
+        resolved_path: Path | None = None
+        candidate_path = Path(path_hint)
+        if candidate_path.is_absolute() and candidate_path.exists():
+            resolved_path = candidate_path
+        else:
+            storage_client = storage or LocalObjectStorage()
+            exists = getattr(storage_client, "exists", None)
+            absolute_path = getattr(storage_client, "absolute_path", None)
+            if not callable(exists) or not callable(absolute_path):
+                return []
+            try:
+                if not bool(exists(path_hint)):
+                    return []
+                resolved_path = Path(str(absolute_path(path_hint)))
+            except Exception:
+                logger.debug("content.reference_pdf.editorial_hints_resolve_failed path=%s", path_hint, exc_info=True)
+                return []
+
+        if resolved_path is None or not resolved_path.exists():
+            return []
+
+        def clean_text(value: object) -> str:
+            return cls._repair_encoding_noise(re.sub(r"\s+", " ", str(value or "")).strip(" \t-•"))
+
+        def looks_like_footer_or_legal(text: str, *, y0: float = 0.0) -> bool:
+            lowered = text.casefold()
+            legal_tokens = (
+                "disclaimer",
+                "registration number",
+                "guaranteed or assured",
+                "read all the offer",
+                "subject to credit risks",
+                "market risks",
+                "default risks",
+                "securities/securitized",
+            )
+            return y0 >= 0.92 or any(token in lowered for token in legal_tokens)
+
+        def merge_title_lines(lines: list[str]) -> tuple[str, str]:
+            if not lines:
+                return "", ""
+            title_parts = [lines[0]]
+            cursor = 1
+            while cursor < min(len(lines), 3):
+                previous = title_parts[-1].rstrip()
+                candidate = lines[cursor]
+                combined = " ".join([*title_parts, candidate]).strip()
+                if previous.endswith((".", "?", "!", ":")) or len(combined.split()) > 18 or len(combined) > 150:
+                    break
+                title_parts.append(candidate)
+                cursor += 1
+            title = clean_text(" ".join(title_parts)).rstrip(" ,;:-")
+            support = clean_text(lines[cursor]) if cursor < len(lines) else ""
+            return title[:180], support[:180]
+
+        hints: list[dict[str, Any]] = []
+        try:
+            import fitz
+
+            with fitz.open(str(resolved_path)) as pdf:
+                for page_index, page in enumerate(pdf, start=1):
+                    width = float(page.rect.width or 1)
+                    height = float(page.rect.height or 1)
+                    blocks: list[dict[str, Any]] = []
+                    for raw_block in page.get_text("blocks"):
+                        text = clean_text(raw_block[4] if len(raw_block) > 4 else "")
+                        if not text:
+                            continue
+                        y0 = float(raw_block[1] or 0) / height
+                        if looks_like_footer_or_legal(text, y0=y0):
+                            continue
+                        blocks.append(
+                            {
+                                "text": text,
+                                "x": round(float(raw_block[0] or 0) / width, 3),
+                                "y": round(y0, 3),
+                                "w": round(max(float(raw_block[2] or 0) - float(raw_block[0] or 0), 0.0) / width, 3),
+                                "h": round(max(float(raw_block[3] or 0) - float(raw_block[1] or 0), 0.0) / height, 3),
+                            }
+                        )
+                    ordered_blocks = sorted(blocks, key=lambda item: (float(item.get("y") or 0), float(item.get("x") or 0)))
+                    ordered_lines = [str(item.get("text") or "").strip() for item in ordered_blocks if str(item.get("text") or "").strip()]
+                    headline, supporting = merge_title_lines(ordered_lines)
+                    sample_copy = clean_text(" ".join(ordered_lines))[:900]
+                    if ordered_lines:
+                        hints.append(
+                            {
+                                "page_index": page_index,
+                                "headline": headline,
+                                "supporting": supporting,
+                                "summary": sample_copy,
+                                "text_blocks": ordered_blocks[:12],
+                            }
+                        )
+        except Exception:
+            logger.debug("content.reference_pdf.editorial_hints_failed path=%s", str(resolved_path), exc_info=True)
+
+        if hints:
+            return hints
+
+        fallback_pages = cls._read_reference_pdf_pages(path_hint, storage=storage)
+        for page_index, page_text in enumerate(fallback_pages, start=1):
+            lines = [
+                clean_text(line)
+                for line in str(page_text or "").splitlines()
+                if clean_text(line) and not looks_like_footer_or_legal(clean_text(line))
+            ]
+            headline, supporting = merge_title_lines(lines)
+            if lines:
+                hints.append(
+                    {
+                        "page_index": page_index,
+                        "headline": headline,
+                        "supporting": supporting,
+                        "summary": clean_text(" ".join(lines))[:900],
+                        "text_blocks": [{"text": line} for line in lines[:12]],
+                    }
+                )
+        return hints
+
+    @classmethod
+    def _sample_page_editorial_intelligence(
+        cls,
+        *,
+        slide_index: int,
+        slide_count: int,
+        headline: str,
+        supporting: str,
+        summary: str,
+        text_blocks: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        text = " ".join(part for part in (headline, supporting, summary) if part).casefold()
+        block_count = len([block for block in (text_blocks or []) if isinstance(block, dict) and str(block.get("text") or "").strip()])
+        word_count = len(re.findall(r"[a-z0-9]+", text))
+        has_question = "?" in headline or "?" in supporting
+        has_curiosity = bool(re.search(r"\b(missed|miss|coverage|overlook(?:ed)?|hidden|notic(?:e|ing)|what if|why)\b", text))
+        has_mechanics = bool(re.search(r"\b(tariff|duty|duties|clause|chapters?|sector|services?|visa|mobility|access|imports?|exports?|terms?|deal)\b", text))
+        has_strategic_signal = bool(re.search(r"\b(signal|template|gateway|future|bigger|shape|position|strategy|strategic|why did|warrant|negotiat)\b", text))
+        has_product_cta = bool(re.search(r"\b(explore|start|sign up|book|platform|product|try|learn more|download|visit)\b", text))
+        if slide_index == 1:
+            editorial_role = "hook"
+        elif slide_index == slide_count:
+            editorial_role = "product_cta" if has_product_cta else "macro_takeaway" if has_strategic_signal or has_question else "closing"
+        elif has_curiosity:
+            editorial_role = "undercovered_angle"
+        elif has_strategic_signal and not has_mechanics:
+            editorial_role = "strategic_meaning"
+        elif has_mechanics:
+            editorial_role = "mechanism"
+        else:
+            editorial_role = "detail"
+
+        if has_product_cta:
+            copy_behavior = "product_cta"
+        elif has_curiosity and has_strategic_signal:
+            copy_behavior = "curiosity_to_strategic_signal"
+        elif has_curiosity:
+            copy_behavior = "curiosity_gap"
+        elif has_strategic_signal:
+            copy_behavior = "strategic_signal"
+        elif has_mechanics:
+            copy_behavior = "deal_mechanics"
+        else:
+            copy_behavior = "explanatory"
+
+        if word_count >= 70 or block_count >= 6:
+            copy_density = "high"
+        elif word_count >= 28 or block_count >= 3:
+            copy_density = "medium"
+        else:
+            copy_density = "low"
+
+        if slide_index == slide_count:
+            closing_grammar = "product_cta" if has_product_cta else "macro_takeaway" if has_strategic_signal or has_question else "summary_close"
+        else:
+            closing_grammar = ""
+
+        return {
+            "sample_page_editorial_role": editorial_role,
+            "sample_page_copy_behavior": copy_behavior,
+            "sample_page_copy_density": copy_density,
+            "sample_page_closing_grammar": closing_grammar,
+            "sample_page_has_question_hook": has_question,
+            "sample_page_has_source_labels": bool(re.search(r"\b(source|sourced|according to|verified facts?)\b", text)),
+        }
 
     @classmethod
     def _build_pdf_reference_sequence_pack(
@@ -4836,6 +5033,7 @@ class ContentService:
         reference_assets: list[dict[str, Any]],
         fallback_editable_fields: list[str],
         base_zone_map: dict[str, Any] | None,
+        storage: object | None = None,
     ) -> dict[str, Any] | None:
         normalized_selected_template_id = str(selected_template_id or "").strip()
         normalized_selected_template_name = str(selected_template_name or "").strip()
@@ -4859,12 +5057,32 @@ class ContentService:
 
         selected_signature = cls._sequence_pack_signature(normalized_selected_template_name)
         matched_reference_assets: list[dict[str, Any]] = []
+        selected_name_match_key = re.sub(r"[^a-z0-9]+", " ", normalized_selected_template_name.casefold()).strip()
         for asset in reference_assets or []:
             if not isinstance(asset, dict):
                 continue
             asset_metadata = asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}
             asset_label = str(asset_metadata.get("label") or asset.get("storage_path") or "").strip()
             asset_signature = cls._sequence_pack_signature(asset.get("storage_path"))
+            asset_name_match_key = re.sub(
+                r"[^a-z0-9]+",
+                " ",
+                " ".join(
+                    str(value or "")
+                    for value in (
+                        asset_label,
+                        Path(str(asset.get("storage_path") or "")).stem,
+                    )
+                ).casefold(),
+            ).strip()
+            explicit_name_match = bool(
+                selected_name_match_key
+                and asset_name_match_key
+                and (
+                    selected_name_match_key in asset_name_match_key
+                    or asset_name_match_key in selected_name_match_key
+                )
+            )
             if (
                 selected_signature is not None
                 and asset_signature is not None
@@ -4873,7 +5091,7 @@ class ContentService:
                 normalized_selected_template_name
                 and asset_label
                 and asset_label.casefold() == normalized_selected_template_name.casefold()
-            ):
+            ) or explicit_name_match:
                 matched_reference_assets.append(dict(asset))
 
         if not matched_recommendations and not matched_reference_assets:
@@ -4931,7 +5149,20 @@ class ContentService:
                     {"copy_lines": [metadata.get("slide_title"), metadata.get("heading"), metadata.get("headline"), metadata.get("label")]},
                 )
 
+        pdf_editorial_hints: list[dict[str, Any]] = []
+        for asset in matched_reference_assets:
+            metadata = asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}
+            storage_path = str(asset.get("storage_path") or "").strip()
+            if not storage_path:
+                continue
+            if storage_path.lower().endswith(".pdf") or str(asset.get("mime_type") or metadata.get("mime_type") or "").lower() == "application/pdf":
+                pdf_editorial_hints = cls._reference_pdf_page_editorial_hints(storage_path, storage=storage)
+                if pdf_editorial_hints:
+                    break
+
         slide_count = max([count for count in count_candidates if count > 0], default=0)
+        if pdf_editorial_hints:
+            slide_count = len(pdf_editorial_hints)
         if slide_count < 3:
             slide_count = max(len(structural_cues), 5)
         slide_count = max(3, min(slide_count, 10))
@@ -4951,6 +5182,7 @@ class ContentService:
         for slide_index in range(1, slide_count + 1):
             current_cue = structural_cues[slide_index - 1] if slide_index - 1 < len(structural_cues) else ""
             slide_reference_asset = reference_by_index.get(slide_index, {})
+            sample_editorial = pdf_editorial_hints[slide_index - 1] if slide_index - 1 < len(pdf_editorial_hints) else {}
             template_asset_path = (
                 cls._sequence_pack_source_asset_path(slide_reference_asset)
                 or cls._sequence_pack_source_asset_path(guidance_recommendation)
@@ -4960,6 +5192,9 @@ class ContentService:
                 slide_index=slide_index,
                 slide_count=slide_count,
                 hints=[
+                    sample_editorial.get("headline"),
+                    sample_editorial.get("supporting"),
+                    sample_editorial.get("summary"),
                     current_cue,
                     normalized_selected_template_name,
                     summary_text,
@@ -4984,6 +5219,20 @@ class ContentService:
                 recommendation=guidance_recommendation,
                 reference_asset=guidance_reference_asset,
             )
+            sample_headline = str(sample_editorial.get("headline") or "").strip()
+            sample_supporting = str(sample_editorial.get("supporting") or "").strip()
+            sample_summary = str(sample_editorial.get("summary") or "").strip()
+            sample_text_blocks = sample_editorial.get("text_blocks") or []
+            sample_intelligence = cls._sample_page_editorial_intelligence(
+                slide_index=slide_index,
+                slide_count=slide_count,
+                headline=sample_headline,
+                supporting=sample_supporting,
+                summary=sample_summary,
+                text_blocks=sample_text_blocks if isinstance(sample_text_blocks, list) else [],
+            )
+            if sample_headline:
+                headline_hint = sample_headline[:120].rstrip(" ,.;:-")
             for cue in per_slide_cues:
                 if cue not in sequence_cues:
                     sequence_cues.append(cue)
@@ -5003,12 +5252,18 @@ class ContentService:
                     "story_role": story_role,
                     "headline_hint": headline_hint,
                     "structural_cues": per_slide_cues[:4],
-                    "sequence_summary": cls._sequence_pack_summary_text(
+                    "sequence_summary": sample_summary[:500] or cls._sequence_pack_summary_text(
                         (slide_reference_asset.get("metadata") if isinstance(slide_reference_asset.get("metadata"), dict) else {}),
                         (guidance_recommendation.get("metadata") if isinstance(guidance_recommendation.get("metadata"), dict) else {}),
                         {"summary": summary_text},
                         {"copy_lines": [headline_hint, *per_slide_cues[:2]]},
                     ),
+                    "sample_page_headline": sample_headline,
+                    "sample_page_supporting": sample_supporting,
+                    "sample_page_copy": sample_summary[:900],
+                    "sample_page_text_blocks": sample_text_blocks,
+                    "sample_page_editorial_source": "pdf_text_blocks" if sample_editorial else "",
+                    **sample_intelligence,
                 }
             )
 

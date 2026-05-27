@@ -9,6 +9,7 @@ from PIL import Image
 
 from app.models.knowledge import TemplateMetadata
 from app.models.knowledge import Template
+from app.schemas.template import TemplateRecommendationResponse
 from app.services.template import TemplateService
 
 
@@ -289,6 +290,46 @@ def test_adaptation_score_balances_carousel_topic_fit_and_page_count() -> None:
     )
 
     assert five_slide_topical > seven_slide_generic
+
+
+def test_calibrate_recommendation_confidence_keeps_ranked_carousel_matches_distinct() -> None:
+    recommendations = [
+        TemplateRecommendationResponse(
+            template_id=uuid4(),
+            name="FTA-3",
+            score=24.0,
+            match_type="adapted_template",
+            decision_confidence=1.0,
+            format_family="carousel",
+            is_primary_adaptation=True,
+            metadata={"adaptation_score": 35.0},
+        ),
+        TemplateRecommendationResponse(
+            template_id=uuid4(),
+            name="Behavioural-Biases",
+            score=22.0,
+            match_type="adapted_template",
+            decision_confidence=1.0,
+            format_family="carousel",
+            metadata={"adaptation_score": 25.0},
+        ),
+        TemplateRecommendationResponse(
+            template_id=uuid4(),
+            name="Bond-Analyzer",
+            score=21.0,
+            match_type="adapted_template",
+            decision_confidence=1.0,
+            format_family="carousel",
+            metadata={"adaptation_score": 20.0},
+        ),
+    ]
+
+    calibrated = TemplateService._calibrate_recommendation_confidence(recommendations)
+
+    confidences = [item.decision_confidence for item in calibrated]
+    assert confidences == sorted(confidences, reverse=True)
+    assert len(set(confidences)) == 3
+    assert all(confidence is not None and confidence < 1.0 for confidence in confidences)
 
 
 def test_normalize_editable_zones_supports_normalized_coordinates() -> None:

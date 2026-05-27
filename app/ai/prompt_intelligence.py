@@ -514,6 +514,9 @@ class PromptIntelligenceService:
                 "Do not state inferences or implications as if they were verified facts.",
                 "If uncertainty remains, name it briefly instead of smoothing it away.",
                 "Do not replace research-backed structure with generic brand filler, generic motivational hooks, or repetitive proof-point lists.",
+                "Use research as raw material for brand strategy, not as the voice. The finished copy must feel like a premium brand creative, not a research paper, policy memo, or source digest.",
+                "Translate evidence into sharp audience-facing hooks, contrasts, labels, and takeaways. Avoid academic transitions such as furthermore, moreover, additionally, in conclusion, and this paper/report examines.",
+                "On-canvas copy should be quotable and designed: short lines, strong nouns, active verbs, and one clear idea per module. Put source discipline behind the scenes unless attribution is explicitly required.",
                 "If the format is carousel or infographic, let each slide or section advance the editorial outline instead of compressing the topic into one poster summary.",
                 "If the format is static or short-form text, condense the strongest thesis and one or two supporting insights without losing the analytical angle.",
             ]
@@ -633,6 +636,10 @@ class PromptIntelligenceService:
         return " ".join(
             [
                 "Strategic content quality rules: think like a senior LinkedIn/Instagram campaign strategist and finance-education copy lead, not a mechanical summarizer.",
+                "Brand intelligence rules: write for the brand's audience, market category, platform, and visual surface. The answer should feel campaign-ready, not like notes from a research analyst.",
+                "Evidence is scaffolding, not the voice. Convert facts into creative tension, memorable framing, and crisp implications; do not narrate the research process or list sources as content unless the format asks for attribution.",
+                "Prefer concrete creative formulations over academic phrasing: use punchy contrast, curiosity, reversal, stakes, and smart-reader payoff. Avoid essay-like wording such as 'this highlights', 'it is important to note', 'furthermore', 'moreover', 'therefore', and 'in conclusion' unless they are inside verified quoted copy.",
+                "Keep on-canvas copy designed and visual: short, rhythmic lines; no paragraph blocks unless the selected sample uses them; no citation-style clutter; no repeated 'verified facts from...' filler.",
                 "Every carousel slide must earn its place with a distinct strategic job: hook tension, factual mechanism, hidden/undercovered angle, implication, proof, or closing payoff.",
                 "Do not use sample headings as lazy copy. If the sample says 'Why this matters now' or 'What actually changed', adapt that grammar into topic-specific, audience-facing copy with a concrete angle.",
                 "Headlines must contain the real topic, tension, consequence, audience implication, or decision payoff; avoid generic labels such as key insight, what changed, why it matters, or investment education unless paired with a concrete topic-specific modifier.",
@@ -782,6 +789,10 @@ class PromptIntelligenceService:
         For carousels and infographics, distribute meaning through sections instead of cramming the whole story into one line.
         For carousel outputs, metadata.carousel_slide_specs must include the real slide-by-slide explanation in slide-level body and/or body_points fields; do not rely on supporting_line alone.
         For carousel outputs, only the final slide spec may contain CTA text. Keep interior slide CTA fields empty.
+        When a selected sample/reference sequence is present with style_reference_only surface policy, its per-slide sample_page_headline, sample_page_supporting, sample_page_copy, sample_page_editorial_role, sample_page_copy_behavior, sample_page_copy_density, sample_page_closing_grammar, headline_hint, and sequence_summary are editorial authority for hook grammar, insight depth, content density, and closing style. Adapt the user's topic into that editorial grammar instead of falling back to generic explanatory headings.
+        If the sample page copy overlaps the user's topic or research summary, treat its concrete facts and insight hierarchy as approved content anchors. If it does not overlap, use only the rhetorical pattern and structure, not the literal facts.
+        Do not convert an editorial or macro-takeaway closing sample into a product promotion or platform CTA unless the user explicitly requests a promotion or the selected sample page itself uses that CTA/product grammar.
+        Brand-intelligent writing requirement: final slide copy must sound like polished brand communication for the intended audience, not a research paper, compliance memo, or analyst brief. Use facts to create sharp creative framing; do not write source-process phrases such as "verified facts from..." as visible module copy unless the sample explicitly uses source labels.
         When the requested format or sample implies a 5-7 slide sequence, provide enough distinct teaching units to fill that story arc instead of collapsing everything into one numbered-list poster summary.
         Persuasion metadata rules: {persuasion_metadata_rules}
         Strategic content quality rules: {strategic_content_quality_rules}
@@ -1196,6 +1207,11 @@ class PromptIntelligenceService:
         17. {audience_research_rules}
         18. Keep messaging audience-facing, not internal, descriptive, or process-oriented.
         19. Preserve the core idea instead of diluting it into generic brand-safe filler.
+        20. When a selected sample/reference carousel provides per-slide sample_page_headline, sample_page_supporting, sample_page_copy, headline_hint, or sequence_summary, use that as the editorial authority for hook style, curiosity level, insight depth, and close grammar. Do not let generic brand positioning or CTA intent override a sample that is interpretive, analytical, or macro-takeaway led.
+        21. If the sample's wording uses curiosity, urgency, undercovered-angle, or smart-reader framing, do not add those techniques to what_must_be_avoided_in_messaging unless a hard brand guardrail explicitly forbids them.
+        22. Keep the message strategy creative and brand-native. It should define audience tension, angle, promise, and payoff, not produce a research-paper thesis or a list of source notes.
+        23. For a style_reference_only carousel, the selected sample sequence is the story model. Match its slide count, per-slide editorial jobs, and final-slide grammar. If the selected sample closes with a macro takeaway, strategic signal, or editorial conclusion, cta_intent must not become product/platform/investment promotion unless the user explicitly requested a product CTA.
+        24. Convert research into an audience-facing creative angle: curiosity hook, specific mechanics, undercovered insight, and strategic payoff. Do not make the strategy sound like a source memo, literature review, or compliance note.
         Return JSON only with keys:
         - primary_campaign_theme
         - core_audience_message
@@ -1373,6 +1389,10 @@ class PromptIntelligenceService:
         - validation_hints
         Make the image element large and dominant, then place overlay zones for text/logo with clear spacing and brand-safe hierarchy.
         Keep copy concise and premium.
+        If template_fit_brief.sequence_pack.surface_policy is style_reference_only and its slides include sample_page_headline, sample_page_supporting, sample_page_copy, sample_page_editorial_role, sample_page_copy_behavior, sample_page_copy_density, sample_page_closing_grammar, headline_hint, or sequence_summary, use the selected sample's editorial grammar as the slide-copy authority. Match the sample's hook strength, undercovered-angle logic, insight density, and closing grammar while replacing only facts that do not belong to the user's topic.
+        Do not summarize the topic when the sample interprets it. Generate non-obvious, researched, audience-aware slide beats that answer why the topic matters, what most people missed, and what strategic pattern it signals when the sample uses that structure.
+        Do not turn the final slide into brand/platform promotion unless the user asks for promotion or the sample final slide is itself a CTA/product surface.
+        Write like a brand strategist making a premium creative: memorable headline, compact insight modules, strategic implication, and visual copy that can sit on a designed slide. Do not write like a research paper writer; avoid essay paragraphs, bibliography-like source mentions, and generic "verified facts" filler.
         Validation report to repair against: {validation_report or {}}
         Brand copy brief: {brand_copy_brief}
         Brand visual brief: {brand_visual_brief}
@@ -1551,6 +1571,9 @@ class PromptIntelligenceService:
         If brand fonts are unavailable, use generic typography roles instead of inventing specific font families.
         Repair icon stamp columns by converting them into cards, proof rows, or more integrated callout structures.
         Do not repair a carousel or infographic into a sparse static poster. Keep the repaired hierarchy true to the requested format.
+        When repairing a style_reference_only carousel with a selected sample/reference sequence, preserve the sample page's editorial grammar and do not introduce unrelated reusable/reference asset names, product surfaces, or promotional CTAs that are absent from the selected sample page.
+        For style_reference_only carousel repair, the selected sample/reference sequence is the only allowed reusable visual family. Do not bind, mention, or copy asset names, storage paths, product surfaces, dashboards, or template titles from any other reference asset. If an unrelated asset seems useful, leave the element generated and describe only the sample-matched visual grammar.
+        If the selected sample page does not visibly use a dashboard, chart, table, trading screen, laptop, or product UI, do not add those surfaces during repair even when the topic has financial or economic facts.
         If compiled_context.brand_visual_brief.design_system or its summary fields are present, use them to repair toward the brand's actual layout family, hierarchy, content structure, motif usage, image treatment, visual craft, composition logic, subject semantics, and logo placement instead of generic fallback structure.
         Use brand_visual_brief.hierarchy_summary and content_structure_summary to restore focal path and structural pacing when validation says the graph is sparse or underdesigned.
         Use brand_visual_brief.visual_craft_summary, composition_logic_summary, and subject_semantics_summary to restore premium depth, framing, and topic-specific scene selection when the graph feels generic.

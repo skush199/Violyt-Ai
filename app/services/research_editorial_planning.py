@@ -176,7 +176,17 @@ class ResearchEditorialPlanningService:
             content_format_guide=content_format_guide or {},
             studio_panel=studio_panel,
         )
-        if ordered_story_beats:
+        sample_slide_count = self._sample_sequence_slide_count(
+            template_context=template_context,
+            sample_editorial_brief=sample_editorial_brief,
+            format_family=format_family,
+        )
+        explicit_slide_count = self._explicit_slide_count(prompt_text)
+        if sample_slide_count and not explicit_slide_count and not explicit_story_beats:
+            preferred_slide_count = sample_slide_count
+        elif explicit_slide_count:
+            preferred_slide_count = explicit_slide_count
+        elif ordered_story_beats:
             preferred_slide_count = max(preferred_slide_count or 0, len(ordered_story_beats))
         outline = self._outline(
             format_family=format_family,
@@ -910,6 +920,52 @@ class ResearchEditorialPlanningService:
                     value = 0
                 if value > 0:
                     return value
+        return None
+
+    def _sample_sequence_slide_count(
+        self,
+        *,
+        template_context: dict[str, Any] | None,
+        sample_editorial_brief: dict[str, Any],
+        format_family: str,
+    ) -> int | None:
+        if format_family != "carousel":
+            return None
+        sequence_pack = (
+            template_context.get("sequence_pack")
+            if isinstance(template_context, dict) and isinstance(template_context.get("sequence_pack"), dict)
+            else {}
+        )
+        surface_policy = self._normalize_text(sequence_pack.get("surface_policy"), limit=40).casefold()
+        if surface_policy not in {"style_reference_only", "lock_template_surface", "sequence_pack_locked"}:
+            return None
+        sequence_slides = [item for item in (sequence_pack.get("slides") or []) if isinstance(item, dict)]
+        try:
+            pack_count = int(sequence_pack.get("slide_count") or 0)
+        except (TypeError, ValueError):
+            pack_count = 0
+        sample_count = int(sample_editorial_brief.get("slide_count") or 0) if isinstance(sample_editorial_brief, dict) else 0
+        count = pack_count or len(sequence_slides) or sample_count
+        return count if count > 0 else None
+
+    def _explicit_slide_count(self, prompt_text: str) -> int | None:
+        text = self._normalize_text(prompt_text, limit=520).casefold()
+        patterns = (
+            r"\b(?:make|create|generate|write|use|with|in)\s+(\d{1,2})\s+(?:slides?|pages?|frames?|carousel\s+slides?)\b",
+            r"\b(?:make|create|generate|write|use|with|in)\s+a\s+(\d{1,2})[-\s]*(?:slide|page|frame)\b",
+            r"\b(\d{1,2})[-\s]*(?:slide|page|frame)\s+(?:carousel|deck|sequence)\b",
+            r"\bcarousel\s+(?:of|with|in)\s+(\d{1,2})\s+(?:slides?|pages?|frames?)\b",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if not match:
+                continue
+            try:
+                count = int(match.group(1))
+            except (TypeError, ValueError):
+                continue
+            if 1 <= count <= 20:
+                return count
         return None
 
     def _reader_payoff(self, prompt_text: str, angle: str) -> str:

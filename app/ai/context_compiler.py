@@ -1676,6 +1676,29 @@ class ContextCompilerService:
                 normalized_sequence_summary = cls._normalize_text(item.get("structural_cues"), limit=120)
             if not normalized_sequence_summary and normalized_headline_hint and not cls._looks_like_weak_sequence_hint(normalized_headline_hint):
                 normalized_sequence_summary = normalized_headline_hint
+            sample_page_headline = cls._normalize_text(item.get("sample_page_headline"), limit=120)
+            sample_page_supporting = cls._normalize_text(item.get("sample_page_supporting"), limit=160)
+            sample_page_copy = cls._normalize_text(item.get("sample_page_copy"), limit=500)
+            sample_page_editorial_role = cls._normalize_text(item.get("sample_page_editorial_role"), limit=40)
+            sample_page_copy_behavior = cls._normalize_text(item.get("sample_page_copy_behavior"), limit=48)
+            sample_page_copy_density = cls._normalize_text(item.get("sample_page_copy_density"), limit=24)
+            sample_page_closing_grammar = cls._normalize_text(item.get("sample_page_closing_grammar"), limit=40)
+            sample_page_text_blocks = []
+            for block in (item.get("sample_page_text_blocks") or [])[:8]:
+                if not isinstance(block, dict):
+                    continue
+                text = cls._normalize_text(block.get("text"), limit=160)
+                if not text:
+                    continue
+                sample_page_text_blocks.append(
+                    {
+                        "text": text,
+                        "x": block.get("x"),
+                        "y": block.get("y"),
+                        "w": block.get("w"),
+                        "h": block.get("h"),
+                    }
+                )
             slides.append(
                 {
                     "slide_index": item.get("slide_index"),
@@ -1690,6 +1713,17 @@ class ContextCompilerService:
                     "visual_craft": cls._compact_visual_craft_dna(visual_craft),
                     "subject_semantics": cls._compact_subject_semantics_dna(subject_semantics),
                     "editorial_dna": cls._compact_editorial_dna(editorial_dna),
+                    "sample_page_headline": sample_page_headline,
+                    "sample_page_supporting": sample_page_supporting,
+                    "sample_page_copy": sample_page_copy,
+                    "sample_page_text_blocks": sample_page_text_blocks,
+                    "sample_page_editorial_source": cls._normalize_text(item.get("sample_page_editorial_source"), limit=32),
+                    "sample_page_editorial_role": sample_page_editorial_role,
+                    "sample_page_copy_behavior": sample_page_copy_behavior,
+                    "sample_page_copy_density": sample_page_copy_density,
+                    "sample_page_closing_grammar": sample_page_closing_grammar,
+                    "sample_page_has_question_hook": bool(item.get("sample_page_has_question_hook")),
+                    "sample_page_has_source_labels": bool(item.get("sample_page_has_source_labels")),
                 }
             )
         return {

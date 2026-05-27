@@ -289,6 +289,80 @@ def test_orchestrator_exact_claim_markers_canonicalize_currency_variants() -> No
     assert unsupported == set()
 
 
+def test_orchestrator_exact_claim_markers_treat_number_words_and_digits_as_equivalent() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel about the India-New Zealand FTA.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+    )
+
+    unsupported = AIOrchestratorService._unsupported_exact_claim_markers(
+        "The agreement aims to double bilateral trade within 5 years.",
+        request=request,
+        compiled_context={
+            "research_editorial_brief": {
+                "fact_model": {
+                    "verified_facts": [
+                        {
+                            "label": "Trade ambition",
+                            "value": "The FTA aims to double bilateral trade in five years.",
+                        },
+                    ]
+                }
+            }
+        },
+    )
+
+    assert unsupported == set()
+
+
+def test_orchestrator_exact_claim_markers_treat_currency_shorthand_as_equivalent() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel about the India-New Zealand FTA.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+    )
+
+    unsupported = AIOrchestratorService._unsupported_exact_claim_markers(
+        "Trade can grow from $2.4B to NZ$5B in 5 years, with $20B investment over 15 years.",
+        request=request,
+        compiled_context={
+            "research_editorial_brief": {
+                "fact_model": {
+                    "verified_facts": [
+                        {
+                            "label": "Trade goal",
+                            "value": "FTA aims to double bilateral trade from $2.4 billion to $5 billion in five years.",
+                        },
+                        {
+                            "label": "Investment",
+                            "value": "New Zealand committed $20 billion investment over the next 15 years.",
+                        },
+                    ]
+                }
+            }
+        },
+    )
+
+    assert unsupported == set()
+
+
 def test_orchestrator_structures_text_payload_filters_compliance_and_boilerplate_for_render_roles() -> None:
     payload = AIOrchestratorService._structure_text_payload_for_layout(
         StructuredTextPayload(
@@ -2794,7 +2868,7 @@ def test_orchestrator_build_carousel_slide_specs_prefers_explicit_prompt_count_o
     assert len(slides) == 5
 
 
-def test_orchestrator_build_carousel_slide_specs_prefers_editorial_preference_over_style_reference_sequence_pack_when_prompt_count_is_implicit() -> None:
+def test_orchestrator_build_carousel_slide_specs_keeps_editorial_preference_when_style_reference_sequence_pack_is_irrelevant() -> None:
     request = AIOrchestrationRequest(
         tenant_id=uuid4(),
         brand_space_id=uuid4(),
@@ -2909,6 +2983,118 @@ def test_orchestrator_build_carousel_slide_specs_does_not_expand_structured_styl
     assert slides[-1]["slide_index"] == 4
 
 
+def test_orchestrator_build_carousel_slide_specs_locks_style_reference_count_and_resets_disallowed_visual_cta_drift() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel on the India-New Zealand FTA.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={
+            "sequence_pack": {
+                "surface_policy": "style_reference_only",
+                "slide_count": 4,
+                "slides": [
+                    {
+                        "slide_index": 1,
+                        "template_name": "Sample 1",
+                        "sample_page_headline": "Fastest trade deal",
+                        "sample_page_editorial_role": "hook",
+                        "sample_page_copy_behavior": "curiosity_gap",
+                    },
+                    {
+                        "slide_index": 2,
+                        "template_name": "Sample 2",
+                        "sample_page_headline": "What's in the deal",
+                        "sample_page_editorial_role": "mechanism",
+                        "sample_page_copy_behavior": "deal_mechanics",
+                    },
+                    {
+                        "slide_index": 3,
+                        "template_name": "Sample 3",
+                        "sample_page_headline": "What coverage missed",
+                        "sample_page_editorial_role": "undercovered_angle",
+                        "sample_page_copy_behavior": "curiosity_gap",
+                    },
+                    {
+                        "slide_index": 4,
+                        "template_name": "Sample 4",
+                        "sample_page_headline": "Small deal. Bigger shape.",
+                        "sample_page_editorial_role": "takeaway",
+                        "sample_page_copy_behavior": "strategic_signal",
+                        "sample_page_closing_grammar": "macro_takeaway",
+                    },
+                ],
+            }
+        },
+    )
+
+    payload = StructuredTextPayload(
+        headline="India-New Zealand FTA",
+        body="A structured read on the agreement.",
+        cta="Explore Jiraaf investment options",
+        hashtags=["#FTA"],
+        metadata={
+            "preferred_slide_count": 5,
+            "carousel_slide_specs": [
+                {
+                    "headline": "Opening",
+                    "supporting_line": "A new deal lands.",
+                    "role": "hook",
+                    "visual_focus": "Laptop with trade charts and flags.",
+                },
+                {
+                    "headline": "Mechanics",
+                    "supporting_line": "Tariffs and sectors changed.",
+                    "role": "structure",
+                    "body_points": ["Tariff access", "Sector movement"],
+                    "visual_focus": "Dashboard with bar charts and trading interface.",
+                },
+                {
+                    "headline": "Hidden angle",
+                    "supporting_line": "There is a deeper read.",
+                    "role": "undercovered_angle",
+                    "visual_focus": "Analytics graph on a screen.",
+                },
+                {
+                    "headline": "Brand angle",
+                    "supporting_line": "A wider signal matters.",
+                    "role": "strategic_meaning",
+                    "visual_focus": "Product cards and portfolio dashboard.",
+                },
+                {
+                    "headline": "Where to invest with Jiraaf",
+                    "supporting_line": "Use Jiraaf to evaluate options.",
+                    "role": "closing",
+                    "cta": "Explore Jiraaf investment options",
+                    "visual_focus": "Investment platform product surface with growth charts.",
+                },
+            ],
+        },
+    )
+
+    slides = AIOrchestratorService._build_carousel_slide_specs(
+        payload,
+        request=request,
+        creative_decision=CreativeDecisionPayload(asset_strategy={"template_surface_policy": "style_reference_only"}),
+    )
+
+    assert len(slides) == 4
+    assert slides[-1]["cta"] == ""
+    assert "Where to invest" not in slides[-1]["headline"]
+    combined_visual_focus = " ".join(str(slide.get("visual_focus") or "") for slide in slides).casefold()
+    assert "selected sample page" in combined_visual_focus
+    assert "laptop with trade charts" not in combined_visual_focus
+    assert "trading interface" not in combined_visual_focus
+    assert "investment platform product surface" not in combined_visual_focus
+
+
 def test_orchestrator_content_semantics_does_not_repair_final_cta_after_structured_count_lock() -> None:
     request = AIOrchestrationRequest(
         tenant_id=uuid4(),
@@ -2981,6 +3167,156 @@ def test_orchestrator_content_semantics_does_not_repair_final_cta_after_structur
     )
 
     assert report["status"] == "clean"
+
+
+def test_orchestrator_content_semantic_validator_flags_sample_count_visual_density_and_closing_drift() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel on the India-New Zealand FTA.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={
+            "sequence_pack": {
+                "surface_policy": "style_reference_only",
+                "slide_count": 4,
+                "slides": [
+                    {
+                        "slide_index": 1,
+                        "sample_page_editorial_role": "hook",
+                        "sample_page_copy_behavior": "curiosity_gap",
+                        "sample_page_copy_density": "medium",
+                    },
+                    {
+                        "slide_index": 2,
+                        "sample_page_editorial_role": "mechanism",
+                        "sample_page_copy_behavior": "deal_mechanics",
+                        "sample_page_copy_density": "high",
+                    },
+                    {
+                        "slide_index": 3,
+                        "sample_page_editorial_role": "undercovered_angle",
+                        "sample_page_copy_behavior": "curiosity_gap",
+                        "sample_page_copy_density": "high",
+                    },
+                    {
+                        "slide_index": 4,
+                        "sample_page_editorial_role": "takeaway",
+                        "sample_page_copy_behavior": "strategic_signal",
+                        "sample_page_copy_density": "medium",
+                        "sample_page_closing_grammar": "macro_takeaway",
+                    },
+                ],
+            }
+        },
+    )
+    payload = StructuredTextPayload(
+        headline="India-New Zealand FTA",
+        body="A five-slide summary.",
+        cta="Explore Jiraaf investment options",
+        hashtags=["#FTA"],
+        metadata={
+            "hook_type": "curiosity-gap",
+            "carousel_slide_specs": [
+                {
+                    "headline": "Opening hook",
+                    "supporting_line": "A new deal landed.",
+                    "role": "hook",
+                    "visual_focus": "Flags and agreement document.",
+                },
+                {
+                    "headline": "Tariffs changed",
+                    "supporting_line": "Tariffs moved.",
+                    "role": "structure",
+                    "proof_points": ["Tariff access changed"],
+                    "visual_focus": "Dashboard with bar charts and trading interface.",
+                },
+                {
+                    "headline": "Mobility matters",
+                    "supporting_line": "Mobility matters too.",
+                    "role": "undercovered_angle",
+                    "proof_points": ["Mobility provisions matter"],
+                    "visual_focus": "Laptop screen with analytics graph.",
+                },
+                {
+                    "headline": "Bigger signal",
+                    "supporting_line": "The deal signals future positioning.",
+                    "role": "strategic_meaning",
+                    "proof_points": ["Developed-market access"],
+                    "visual_focus": "Product dashboard cards.",
+                },
+                {
+                    "headline": "Where to invest with Jiraaf",
+                    "supporting_line": "Use Jiraaf to explore options.",
+                    "role": "closing",
+                    "cta": "Explore Jiraaf investment options",
+                    "visual_focus": "Investment platform product surface with growth charts.",
+                },
+            ],
+        },
+    )
+
+    report = AIOrchestratorService._validate_content_semantics(
+        request=request,
+        text_payload=payload,
+        creative_decision=CreativeDecisionPayload(asset_strategy={"template_surface_policy": "style_reference_only"}),
+    )
+
+    issue_codes = {issue["code"] for issue in report["issues"]}
+    assert report["status"] == "needs_rewrite"
+    assert "carousel_sample_sequence_count_drift" in issue_codes
+    assert "carousel_raw_sample_disallowed_visual_system" in issue_codes
+    assert "carousel_raw_sample_density_drift" in issue_codes
+    assert "carousel_raw_sample_closing_cta_drift" in issue_codes
+
+
+def test_merge_targeted_carousel_rewrite_payload_preserves_unrepaired_slides() -> None:
+    previous_payload = StructuredTextPayload(
+        headline="Carousel",
+        body="Original full sequence",
+        cta="",
+        hashtags=[],
+        metadata={
+            "carousel_slide_specs": [
+                {"slide_number": 1, "slide_role": "hook", "headline": "Slide 1"},
+                {"slide_number": 2, "slide_role": "structure", "headline": "Slide 2"},
+                {"slide_number": 3, "slide_role": "undercovered_angle", "headline": "Old 3"},
+                {"slide_number": 4, "slide_role": "takeaway", "headline": "Old 4", "cta": "Old CTA"},
+            ]
+        },
+    )
+    rewritten_payload = {
+        "headline": "Carousel",
+        "body": "Updated targeted slides",
+        "cta": "",
+        "hashtags": [],
+        "metadata": {
+            "carousel_slide_specs": [
+                {"slide_number": 3, "slide_role": "undercovered_angle", "headline": "New 3"},
+                {"slide_number": 4, "slide_role": "takeaway", "headline": "New 4", "cta": ""},
+            ]
+        },
+    }
+
+    merged = AIOrchestratorService._merge_targeted_carousel_rewrite_payload(
+        previous_payload=previous_payload,
+        rewritten_payload=rewritten_payload,
+        revision_scope={"only_targeted": True, "slide_indexes": [3, 4]},
+    )
+
+    slides = merged["metadata"]["carousel_slide_specs"]
+    assert len(slides) == 4
+    assert slides[0]["headline"] == "Slide 1"
+    assert slides[1]["headline"] == "Slide 2"
+    assert slides[2]["headline"] == "New 3"
+    assert slides[3]["headline"] == "New 4"
+    assert slides[3]["cta"] == ""
 
 
 def test_orchestrator_content_semantic_validator_flags_generic_headline_unsupported_claim_and_weak_visual_focus() -> None:
@@ -4321,6 +4657,79 @@ def test_build_carousel_slide_render_prompt_uses_sample_page_blueprint_instead_o
     assert "Scene-graph geometry contract JSON" not in prompt
 
 
+def test_build_carousel_slide_render_prompt_suppresses_extra_body_for_sample_cover_with_two_text_blocks() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel about a new trade agreement.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Example", "visual_identity": {}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={"sequence_pack": {"surface_policy": "style_reference_only", "slide_count": 4}},
+    )
+    slide = {
+        "slide_index": 1,
+        "slide_count": 4,
+        "role": "hook",
+        "headline": "India Closed Its Fastest Trade Deal Ever with New Zealand",
+        "supporting_line": "Here's what you missed.",
+        "body": "Discover why this swift agreement unlocks new trade pathways.",
+        "metadata": {
+            "story_role": "hook",
+            "reference_template_name": "Client sample",
+            "reference_layout_asset_path": "tenant/reference/client-sample.pdf",
+            "reference_slide_index": 1,
+            "reference_slide_count": 4,
+            "sample_page_blueprint": {
+                "layout_category": "cover_or_hero_visual",
+                "density": "airy",
+                "zones": [
+                    {"role": "headline", "x": 0.14, "y": 0.12, "w": 0.71, "h": 0.15},
+                    {"role": "body", "x": 0.23, "y": 0.27, "w": 0.54, "h": 0.06},
+                    {"role": "image", "x": 0.05, "y": 0.35, "w": 0.9, "h": 0.55},
+                ],
+                "module_counts": {"large_visual_count": 1, "text_block_count": 2, "footer_band_count": 1},
+                "visual_permissions": {"cta_allowed": False},
+                "must_match": ["centered headline", "full bleed handshake image"],
+            },
+        },
+    }
+    scene_graph = GenerationSceneGraph.model_validate(
+        {"canvas": {"width": 1080, "height": 1350, "platform": "linkedin"}, "elements": []}
+    )
+
+    prompt = AIOrchestratorService.build_carousel_slide_render_prompt(
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            layout_mode="adapted_template",
+            asset_strategy={"template_surface_policy": "style_reference_only"},
+        ),
+        message_strategy=None,
+        slide=slide,
+        scene_graph=scene_graph,
+        reference_images=[
+            {
+                "asset_id": "sample",
+                "asset_role": "reference_creative",
+                "storage_path": "tenant/reference/client-sample.pdf",
+                "mime_type": "application/pdf",
+                "metadata": {"label": "Client sample", "format_family": "carousel"},
+            }
+        ],
+        compiled_context={},
+    )
+
+    assert 'Use this headline verbatim' in prompt
+    assert 'Use this supporting line verbatim' in prompt
+    assert 'Use this body copy verbatim' not in prompt
+    assert "Discover why this swift agreement" not in prompt
+
+
 def test_build_carousel_slide_render_prompt_card_grid_uses_horizontal_fallback_count() -> None:
     request = AIOrchestrationRequest(
         tenant_id=uuid4(),
@@ -4481,6 +4890,51 @@ def test_sample_output_similarity_uses_vision_ocr_and_premium_quality_signals() 
     assert "craft_depth_style_drift" in report["issues"]
 
 
+def test_sample_output_similarity_uses_module_text_counts_for_structured_rows() -> None:
+    sample_blueprint = {
+        "layout_category": "numbered_or_icon_row_list",
+        "density": "airy",
+        "module_counts": {
+            "horizontal_band_count": 7,
+            "card_like_count": 7,
+            "large_visual_count": 0,
+            "small_icon_like_count": 21,
+            "top_text_band_count": 1,
+            "footer_band_count": 1,
+            "text_block_count": 7,
+            "cta_count": 0,
+        },
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": False, "table_allowed": False},
+        "ocr_structure": {"readable_text_blocks": 15, "text_overlap_or_collision_risk": "none"},
+    }
+    output_blueprint = {
+        "layout_category": "numbered_or_icon_row_list",
+        "density": "airy",
+        "module_counts": {
+            "horizontal_band_count": 6,
+            "card_like_count": 6,
+            "large_visual_count": 0,
+            "small_icon_like_count": 6,
+            "top_text_band_count": 1,
+            "footer_band_count": 0,
+            "text_block_count": 6,
+            "cta_count": 0,
+        },
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": False, "table_allowed": False},
+        "ocr_structure": {"readable_text_blocks": 7, "text_overlap_or_collision_risk": "none"},
+    }
+
+    report = AIOrchestratorService._sample_output_similarity_report(
+        sample_blueprint=sample_blueprint,
+        output_blueprint=output_blueprint,
+        legal_footer_overlay_deferred=True,
+    )
+
+    assert report["text_block_count_source"] == "module_counts"
+    assert "ocr_text_block_count_drift" not in report["issues"]
+    assert "ocr_text_block_count_drift" not in report["hard_retry_issues"]
+
+
 def test_sample_output_similarity_does_not_retry_soft_drift_above_acceptance_score() -> None:
     sample_blueprint = {
         "layout_category": "cover_or_hero_visual",
@@ -4523,6 +4977,97 @@ def test_sample_output_similarity_does_not_retry_soft_drift_above_acceptance_sco
     assert report["hard_retry_issues"] == []
     assert "content_density_drift" in report["issues"]
     assert "craft_rendering_style_drift" in report["issues"]
+
+
+def test_sample_output_similarity_uses_effective_layout_mode_from_module_counts() -> None:
+    sample_blueprint = {
+        "layout_category": "cover_or_hero_visual",
+        "density": "balanced",
+        "module_counts": {
+            "horizontal_band_count": 0,
+            "card_like_count": 3,
+            "large_visual_count": 0,
+            "small_icon_like_count": 3,
+            "top_text_band_count": 1,
+            "footer_band_count": 1,
+        },
+        "must_match": ["three visual-card sections", "logo top right"],
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": False, "table_allowed": False},
+    }
+    output_blueprint = {
+        "layout_category": "card_callout_grid",
+        "density": "balanced",
+        "module_counts": {
+            "horizontal_band_count": 0,
+            "card_like_count": 3,
+            "large_visual_count": 0,
+            "small_icon_like_count": 3,
+            "top_text_band_count": 1,
+            "footer_band_count": 0,
+        },
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": False, "table_allowed": False},
+    }
+
+    report = AIOrchestratorService._sample_output_similarity_report(
+        sample_blueprint=sample_blueprint,
+        output_blueprint=output_blueprint,
+        legal_footer_overlay_deferred=True,
+    )
+
+    assert report["effective_sample_layout_category"] == "card_callout_grid"
+    assert report["effective_output_layout_category"] == "card_callout_grid"
+    assert "layout_category_drift" not in report["issues"]
+    assert "footer_band_count_drift" not in report["issues"]
+
+
+def test_sample_output_similarity_allows_sample_row_list_when_table_not_allowed() -> None:
+    sample_blueprint = {
+        "layout_category": "numbered_or_icon_row_list",
+        "density": "dense",
+        "module_counts": {
+            "horizontal_band_count": 7,
+            "card_like_count": 0,
+            "large_visual_count": 0,
+            "small_icon_like_count": 7,
+            "top_text_band_count": 1,
+            "footer_band_count": 1,
+            "table_count": 0,
+        },
+        "visual_permissions": {
+            "dashboard_allowed": False,
+            "cta_allowed": False,
+            "table_allowed": False,
+        },
+    }
+    output_blueprint = {
+        "layout_category": "numbered_or_icon_row_list",
+        "density": "dense",
+        "module_counts": {
+            "horizontal_band_count": 7,
+            "card_like_count": 0,
+            "large_visual_count": 0,
+            "small_icon_like_count": 7,
+            "top_text_band_count": 1,
+            "footer_band_count": 1,
+            "table_count": 0,
+        },
+        "visual_permissions": {
+            "dashboard_allowed": False,
+            "cta_allowed": False,
+            "table_allowed": False,
+        },
+    }
+
+    report = AIOrchestratorService._sample_output_similarity_report(
+        sample_blueprint=sample_blueprint,
+        output_blueprint=output_blueprint,
+    )
+
+    assert report["effective_sample_layout_category"] == "numbered_or_icon_row_list"
+    assert report["effective_output_layout_category"] == "numbered_or_icon_row_list"
+    assert "list_or_table_grammar_invented" not in report["issues"]
+    assert "list_or_table_grammar_invented" not in report["hard_retry_issues"]
+    assert report["retry_recommended"] is False
 
 
 def test_sample_output_similarity_ignores_document_date_label_as_cta() -> None:
@@ -12613,6 +13158,9 @@ def test_carousel_render_prompt_uses_all_approved_module_lines_for_sample_module
             "reference_layout_asset_path": "tenant/reference/FTA-3.pdf",
             "reference_slide_index": 2,
             "reference_slide_count": 4,
+            "sample_page_editorial_role": "mechanism",
+            "sample_page_copy_behavior": "deal_mechanics",
+            "sample_page_copy_density": "high",
             "sample_page_blueprint": {
                 "layout_category": "numbered_or_icon_row_list",
                 "module_counts": {"horizontal_band_count": 4, "small_icon_like_count": 4},
@@ -12649,6 +13197,8 @@ def test_carousel_render_prompt_uses_all_approved_module_lines_for_sample_module
 
     assert "This slide needs 4 proof/callout module(s)" in prompt
     assert "SAMPLE MODULE COUNT LOCK: render exactly 4 visible row/list module(s)" in prompt
+    assert "SELECTED SAMPLE EDITORIAL CONTRACT" in prompt
+    assert "copy_behavior=deal_mechanics" in prompt
     assert "Do not merge, drop, compress, or replace these rows" in prompt
     assert "Most tariffs are removed immediately" in prompt
     assert "NZ$43M immediate tariff savings" in prompt
@@ -12688,6 +13238,9 @@ def test_carousel_render_prompt_locks_card_grid_against_topic_hero_scene() -> No
             "reference_layout_asset_path": "tenant/reference/FTA-3.pdf",
             "reference_slide_index": 3,
             "reference_slide_count": 4,
+            "sample_page_editorial_role": "undercovered_angle",
+            "sample_page_copy_behavior": "curiosity_gap",
+            "sample_page_copy_density": "medium",
             "sample_page_blueprint": {
                 "layout_category": "card_callout_grid",
                 "module_counts": {"card_like_count": 3, "small_icon_like_count": 3, "large_visual_count": 0},
@@ -12724,9 +13277,112 @@ def test_carousel_render_prompt_locks_card_grid_against_topic_hero_scene() -> No
     )
 
     assert "SAMPLE MODULE COUNT LOCK: render exactly 3 distinct card/callout module(s)" in prompt
+    assert "copy_behavior=curiosity_gap" in prompt
+    assert "undercovered-angle pages need analytical reveal behavior" in prompt
     assert "Do not convert the card grid into a standalone hero scene" in prompt
     assert "Topic concepts such as people, mobility, products, screens, documents, or market objects must be translated into small module-level icons" in prompt
     assert "Professionals and students gain clearer mobility routes" in prompt
+    assert len(prompt) <= AIOrchestratorService.CAROUSEL_IMAGE_PROMPT_MAX_LENGTH
+
+
+def test_carousel_render_prompt_locks_icon_text_sections_from_cover_like_sample() -> None:
+    blueprint = {
+        "layout_category": "cover_or_hero_visual",
+        "zones": [
+            {"role": "headline", "description": "Main headline centered"},
+            {"role": "subheading", "description": "Supporting subheading"},
+            {"role": "image+body", "description": "Left info icon with associated text"},
+            {"role": "image+body", "description": "Right info icon with associated text"},
+            {"role": "image+body", "description": "Bottom info icon with associated text"},
+        ],
+        "module_counts": {
+            "horizontal_band_count": 3,
+            "card_like_count": 0,
+            "large_visual_count": 0,
+            "small_icon_like_count": 3,
+            "text_block_count": 5,
+        },
+        "must_match": ["three main text+icon sections", "icons above text blocks"],
+    }
+
+    assert AIOrchestratorService._sample_blueprint_layout_mode(blueprint) == "vertical_icon_explainer"
+    assert "observed icon/text explainer structure" in AIOrchestratorService._sample_blueprint_layout_instruction(blueprint)
+
+
+def test_carousel_render_prompt_removes_product_cta_language_for_macro_sample_close() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel on India-New Zealand FTA implications.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png", "size": {"width": 1080, "height": 1350}},
+        resolved_brand_context={"brand_name": "Jiraaf", "visual_identity": {"palette_roles": {"background": "#FFFFFF", "primary": "#003975", "secondary": "#FFA400"}}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={"sequence_pack": {"surface_policy": "style_reference_only", "slide_count": 4}},
+    )
+    slide = {
+        "role": "closing",
+        "headline": "Small deal. Bigger shape.",
+        "supporting_line": "A small bilateral agreement can signal India's next trade posture.",
+        "body": "The FTA works as a developed-market gateway and a template for upcoming negotiations.",
+        "proof_points": ["Developed-market gateway", "Template for future FTAs"],
+        "visual_focus": "Brand-led product-style card stack with a laptop dashboard and investment platform surface.",
+        "transition_note": "Invitation to explore linked fixed-income opportunities with confidence.",
+        "cta": "",
+        "slide_index": 4,
+        "slide_count": 4,
+        "metadata": {
+            "story_role": "takeaway",
+            "reference_template_name": "FTA (3)",
+            "reference_layout_asset_path": "tenant/reference/FTA-3.pdf",
+            "reference_slide_index": 4,
+            "reference_slide_count": 4,
+            "sample_page_editorial_role": "takeaway",
+            "sample_page_copy_behavior": "strategic_signal",
+            "sample_page_copy_density": "medium",
+            "sample_page_closing_grammar": "macro_takeaway",
+            "sample_page_blueprint": {
+                "layout_category": "editorial_explainer",
+                "module_counts": {"large_visual_count": 0, "horizontal_band_count": 2, "small_icon_like_count": 1},
+                "visual_permissions": {"cta_allowed": False, "dashboard_allowed": False, "table_allowed": False},
+            },
+        },
+    }
+
+    prompt = AIOrchestratorService.build_carousel_slide_render_prompt(
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            layout_mode="adapted_template",
+            asset_strategy={"use_generated_image": True, "template_surface_policy": "style_reference_only"},
+        ),
+        message_strategy=None,
+        slide=slide,
+        scene_graph=GenerationSceneGraph.model_validate(
+            {
+                "canvas": {"width": 1080, "height": 1350, "platform": "linkedin", "file_type": "png"},
+                "layout_mode": "adapted_template",
+                "elements": [],
+            }
+        ),
+        reference_images=[
+            {
+                "asset_id": "fta-sample",
+                "asset_role": "reference_creative",
+                "storage_path": "tenant/reference/FTA-3.pdf",
+                "mime_type": "application/pdf",
+                "metadata": {"conditioning_page_index": 4, "label": "FTA (3)"},
+            }
+        ],
+        compiled_context={},
+    )
+
+    assert "preserve the sample's macro-takeaway closing grammar" in prompt
+    assert "action-oriented product or decision-support surface" not in prompt
+    assert "Invitation to explore linked fixed-income opportunities" not in prompt
+    assert "Brand-led product-style card stack" not in prompt
+    assert "platform promotion unless the sample closing grammar is product_cta" in prompt
     assert len(prompt) <= AIOrchestratorService.CAROUSEL_IMAGE_PROMPT_MAX_LENGTH
 
 
@@ -14463,6 +15119,271 @@ def test_orchestrator_content_semantic_preflight_replaces_sample_headings_before
     assert "Why this matters now" not in headlines
     assert "What to do with this insight" not in headlines
     assert "carousel_raw_generic_headline" not in {issue["code"] for issue in report["issues"]}
+
+
+def test_orchestrator_content_semantic_preflight_uses_selected_sample_editorial_grammar() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel on the Acme-Pacific trade agreement.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Acme Capital"},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={
+            "sequence_pack": {
+                "surface_policy": "style_reference_only",
+                "selected_template_name": "Trade sample",
+                "slide_count": 4,
+                "slides": [
+                    {
+                        "slide_index": 1,
+                        "story_role": "hook",
+                        "sample_page_headline": "Acme closed its fastest trade deal yet",
+                        "sample_page_supporting": "Here is what you missed.",
+                        "sample_page_copy": "Acme Pacific trade agreement fastest trade deal. Here is what you missed.",
+                        "sample_page_copy_behavior": "curiosity_gap",
+                        "sample_page_editorial_role": "hook",
+                    },
+                    {
+                        "slide_index": 2,
+                        "story_role": "structure",
+                        "sample_page_headline": "What is actually in the deal",
+                        "sample_page_copy": "Acme Pacific trade agreement tariff clauses sector access services mobility.",
+                        "sample_page_copy_behavior": "deal_mechanics",
+                        "sample_page_editorial_role": "mechanism",
+                    },
+                    {
+                        "slide_index": 3,
+                        "story_role": "undercovered_angle",
+                        "sample_page_headline": "What most coverage missed",
+                        "sample_page_copy": "Acme Pacific trade agreement overlooked clauses and strategic implications.",
+                        "sample_page_copy_behavior": "curiosity_gap",
+                        "sample_page_editorial_role": "undercovered_angle",
+                    },
+                    {
+                        "slide_index": 4,
+                        "story_role": "strategic_meaning",
+                        "sample_page_headline": "Small deal. Bigger shape.",
+                        "sample_page_copy": "Acme Pacific trade agreement sets a template for larger negotiations.",
+                        "sample_page_copy_behavior": "strategic_signal",
+                        "sample_page_editorial_role": "macro_takeaway",
+                        "sample_page_closing_grammar": "macro_takeaway",
+                    },
+                ],
+            }
+        },
+    )
+    payload = StructuredTextPayload(
+        headline="Acme-Pacific trade agreement",
+        body="A concise explainer.",
+        cta="Explore the platform",
+        hashtags=["#Trade"],
+        metadata={
+            "hook_type": "proof-led",
+            "claim_evidence_pairs": [{"claim": "Trade agreement", "evidence": "User supplied topic"}],
+            "carousel_slide_specs": [
+                {
+                    "slide_number": 1,
+                    "slide_role": "hook",
+                    "headline": "Why this matters now",
+                    "supporting_line": "A new agreement was announced.",
+                    "body": "The agreement creates a new trade signal.",
+                    "visual_focus": "Premium trade route module.",
+                    "cta": "",
+                },
+                {
+                    "slide_number": 2,
+                    "slide_role": "structure",
+                    "headline": "What actually changed",
+                    "supporting_line": "Verified facts from Newswire on the trade deal.",
+                    "body": "The deal changes tariff and services access.",
+                    "proof_points": ["Verified facts from Newswire on tariff details", "Sector access changes the real story"],
+                    "visual_focus": "Structured row modules.",
+                    "cta": "",
+                },
+                {
+                    "slide_number": 3,
+                    "slide_role": "undercovered_angle",
+                    "headline": "Key insight",
+                    "supporting_line": "The overlooked layer is how the clauses shape future talks.",
+                    "body": "The real story is not only trade volume.",
+                    "visual_focus": "Evidence cards.",
+                    "cta": "",
+                },
+                {
+                    "slide_number": 4,
+                    "slide_role": "strategic_meaning",
+                    "headline": "Explore the platform next",
+                    "supporting_line": "Read the agreement as a signal for future negotiations.",
+                    "body": "The agreement may become a template.",
+                    "visual_focus": "Macro closing modules.",
+                    "cta": "Explore the platform",
+                },
+            ],
+        },
+    )
+
+    raw_report = AIOrchestratorService._validate_content_semantics(
+        request=request,
+        text_payload=payload,
+        compiled_context={},
+    )
+    assert "carousel_research_process_filler" in {issue["code"] for issue in raw_report["issues"]}
+
+    cleaned = AIOrchestratorService._preflight_text_payload_semantics(
+        request=request,
+        text_payload=payload,
+        compiled_context={},
+    )
+    cleaned_report = AIOrchestratorService._validate_content_semantics(
+        request=request,
+        text_payload=cleaned,
+        compiled_context={},
+    )
+
+    slides = cleaned.metadata["carousel_slide_specs"]
+    assert slides[0]["headline"] == "Acme closed its fastest trade deal yet"
+    assert slides[1]["headline"] == "What is actually in the deal"
+    assert slides[1]["proof_points"] == ["Sector access changes the real story"]
+    assert slides[1]["supporting_line"] == ""
+    assert slides[3]["headline"] == "Small deal. Bigger shape."
+    assert slides[3]["cta"] == ""
+    assert "carousel_research_process_filler" not in {issue["code"] for issue in cleaned_report["issues"]}
+
+
+def test_orchestrator_content_semantic_validator_uses_sanitized_style_reference_visuals_before_repair() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel on the India-New Zealand FTA signed on 27 April 2026.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={
+            "sequence_pack": {
+                "surface_policy": "style_reference_only",
+                "slide_count": 4,
+                "slides": [
+                    {
+                        "slide_index": 1,
+                        "sample_page_editorial_role": "hook",
+                        "sample_page_copy_behavior": "curiosity_gap",
+                        "sample_page_copy_density": "medium",
+                        "sample_page_copy": "India closed its fastest trade deal ever with New Zealand.",
+                    },
+                    {
+                        "slide_index": 2,
+                        "sample_page_editorial_role": "structure",
+                        "sample_page_copy_behavior": "deal_mechanics",
+                        "sample_page_copy_density": "high",
+                        "sample_page_copy": "Tariff access, services, mobility, and sector clauses.",
+                    },
+                    {
+                        "slide_index": 3,
+                        "sample_page_editorial_role": "undercovered_angle",
+                        "sample_page_copy_behavior": "curiosity_gap",
+                        "sample_page_copy_density": "high",
+                        "sample_page_copy": "What most coverage missed about the deal.",
+                    },
+                    {
+                        "slide_index": 4,
+                        "sample_page_editorial_role": "takeaway",
+                        "sample_page_copy_behavior": "strategic_signal",
+                        "sample_page_copy_density": "medium",
+                        "sample_page_closing_grammar": "macro_takeaway",
+                        "sample_page_copy": "Small deal. Bigger shape.",
+                    },
+                ],
+            }
+        },
+    )
+    compiled_context = {
+        "research_editorial_brief": {
+            "fact_model": {
+                "verified_facts": [
+                    {"label": "Signing date", "value": "The agreement was signed on 27 April 2026."},
+                    {"label": "Trade goal", "value": "The FTA aims to double bilateral trade in five years."},
+                ]
+            }
+        }
+    }
+    payload = StructuredTextPayload(
+        headline="India-New Zealand FTA",
+        body="A strategic carousel.",
+        cta="",
+        hashtags=["#FTA"],
+        metadata={
+            "hook_type": "curiosity-gap",
+            "claim_evidence_pairs": [{"claim": "Trade goal", "evidence": "FTA aims to double trade in five years"}],
+            "carousel_slide_specs": [
+                {
+                    "slide_number": 1,
+                    "slide_role": "hook",
+                    "headline": "India and New Zealand seal their fastest trade deal ever",
+                    "supporting_line": "The agreement was signed on 27 April 2026.",
+                    "proof_points": ["Signed on 27 April 2026"],
+                    "visual_focus": "3D-rendered digital globe with trade icons and growing graph overlays.",
+                },
+                {
+                    "slide_number": 2,
+                    "slide_role": "structure",
+                    "headline": "What's actually in the deal?",
+                    "supporting_line": "The mechanics go beyond one tariff headline.",
+                    "proof_points": ["Tariff access", "Services clauses", "Mobility provisions"],
+                    "visual_focus": "Illustrated infographic with tariff charts and sector icons.",
+                },
+                {
+                    "slide_number": 3,
+                    "slide_role": "undercovered_angle",
+                    "headline": "What most coverage missed",
+                    "supporting_line": "This is also about leverage in future negotiations.",
+                    "proof_points": ["Sensitive sectors stay protected", "Mobility rules create a services signal", "The deal sets negotiation precedent"],
+                    "visual_focus": "Laptop screen with analytics graph and visa stamp overlays.",
+                },
+                {
+                    "slide_number": 4,
+                    "slide_role": "takeaway",
+                    "headline": "Why this deal matters for investors and market watchers",
+                    "supporting_line": "A smaller FTA can still show how India wants future deals to behave.",
+                    "body": "Current trade is NZ$3.95 billion, but the larger story is the future negotiation template.",
+                    "proof_points": ["FTA aims to double trade in 5 years", "Future market-access template"],
+                    "stat_highlights": ["Trade today: NZ$3.95B", "Target: NZ$5B in 5 years"],
+                    "cta": "Explore Jiraaf opportunities",
+                    "visual_focus": "3D product mockup of a digital dashboard with upward trade graphs and investment flows.",
+                },
+            ],
+        },
+    )
+
+    cleaned = AIOrchestratorService._preflight_text_payload_semantics(
+        request=request,
+        text_payload=payload,
+        compiled_context=compiled_context,
+    )
+    report = AIOrchestratorService._validate_content_semantics(
+        request=request,
+        text_payload=cleaned,
+        compiled_context=compiled_context,
+        creative_decision=CreativeDecisionPayload(asset_strategy={"template_surface_policy": "style_reference_only"}),
+    )
+
+    issue_codes = {issue["code"] for issue in report["issues"]}
+    assert "carousel_unsupported_exact_claim" not in issue_codes
+    assert "carousel_slide_unsupported_exact_claim" not in issue_codes
+    assert "carousel_raw_sample_disallowed_visual_system" not in issue_codes
+    assert "carousel_sample_disallowed_visual_system" not in issue_codes
+    assert "carousel_raw_sample_closing_cta_drift" not in issue_codes
+    assert "carousel_weak_visual_focus" not in issue_codes
 
 
 def test_orchestrator_content_semantic_validator_flags_static_numeric_chart_without_values() -> None:

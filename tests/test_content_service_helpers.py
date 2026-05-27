@@ -1471,6 +1471,90 @@ def test_build_selected_template_authority_sequence_pack_uses_matching_asset_pag
     ]
 
 
+def test_selected_template_authority_sequence_pack_uses_pdf_page_editorial_copy() -> None:
+    pdf_path = Path.cwd() / f"violyt-selected-template-{uuid4().hex}.pdf"
+    try:
+        canvas = pdf_canvas.Canvas(str(pdf_path))
+        for lines in (
+            [
+                "India closed its fastest trade deal ever",
+                "with New Zealand.",
+                "Here is what you missed.",
+            ],
+            [
+                "What's actually in the deal:",
+                "Zero duty on Indian exports across all tariff lines.",
+                "Top gainers: textiles, pharma, engineering.",
+            ],
+            [
+                "What most coverage missed.",
+                "Three things worth noticing.",
+                "The deal is not equal on paper, and it was not meant to be.",
+            ],
+            [
+                "Small deal. Bigger shape.",
+                "The clauses negotiated here set a template for bigger trade deals.",
+            ],
+        ):
+            y = 760
+            for line in lines:
+                canvas.drawString(72, y, line)
+                y -= 28
+            canvas.drawString(72, 40, "Disclaimer: Fixed returns do not constitute guaranteed returns.")
+            canvas.showPage()
+        canvas.save()
+
+        class _FakeStorage:
+            def exists(self, storage_path: str) -> bool:
+                return storage_path == "tenant/reference_creatives/FTA-3.pdf"
+
+            def absolute_path(self, storage_path: str) -> str:
+                assert storage_path == "tenant/reference_creatives/FTA-3.pdf"
+                return str(pdf_path)
+
+        sequence_pack = ContentService._build_selected_template_authority_sequence_pack(
+            selected_template_id="selected-template-id",
+            selected_template_name="FTA (3)",
+            normalized_recommendations=[
+                {
+                    "template_id": "selected-template-id",
+                    "name": "FTA (3)",
+                    "metadata": {"summary": "Layout marketing_social. Editable zones: headline, body, image."},
+                }
+            ],
+            reference_assets=[
+                {
+                    "asset_role": "reference_creative",
+                    "storage_path": "tenant/reference_creatives/FTA-3.pdf",
+                    "mime_type": "application/pdf",
+                    "metadata": {"page_count": 4, "summary": "Generic carousel summary"},
+                }
+            ],
+            fallback_editable_fields=["headline", "body"],
+            base_zone_map={"zones": [{"zone_id": "headline", "role": "headline"}]},
+            storage=_FakeStorage(),
+        )
+
+        assert sequence_pack is not None
+        assert sequence_pack["slide_count"] == 4
+        assert sequence_pack["slides"][0]["headline_hint"] == "India closed its fastest trade deal ever with New Zealand"
+        assert sequence_pack["slides"][0]["sample_page_supporting"] == "Here is what you missed."
+        assert "Disclaimer" not in sequence_pack["slides"][0]["sample_page_copy"]
+        assert sequence_pack["slides"][2]["headline_hint"] == "What most coverage missed"
+        assert sequence_pack["slides"][2]["story_role"] == "undercovered_angle"
+        assert sequence_pack["slides"][2]["sample_page_copy_behavior"] == "curiosity_gap"
+        assert sequence_pack["slides"][2]["sample_page_editorial_role"] == "undercovered_angle"
+        assert sequence_pack["slides"][3]["headline_hint"] == "Small deal. Bigger shape"
+        assert sequence_pack["slides"][3]["sample_page_closing_grammar"] == "macro_takeaway"
+        assert sequence_pack["slides"][3]["sample_page_copy_behavior"] == "strategic_signal"
+        assert sequence_pack["slides"][3]["sample_page_editorial_source"] == "pdf_text_blocks"
+    finally:
+        try:
+            pdf_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def test_build_selected_template_authority_sequence_pack_fills_paths_summaries_and_sanitizes_zero_zones() -> None:
     sequence_pack = ContentService._build_selected_template_authority_sequence_pack(
         selected_template_id="selected-template-id",

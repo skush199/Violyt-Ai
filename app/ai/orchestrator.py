@@ -1805,6 +1805,28 @@ class AIOrchestratorService:
             slide_metadata.get("story_role") or slide.get("role"),
             limit=48,
         )
+        sample_contract = {
+            "sample_page_editorial_role": slide_metadata.get("sample_page_editorial_role"),
+            "sample_page_copy_behavior": slide_metadata.get("sample_page_copy_behavior"),
+            "sample_page_copy_density": slide_metadata.get("sample_page_copy_density"),
+            "sample_page_closing_grammar": slide_metadata.get("sample_page_closing_grammar"),
+        }
+        story_role_normalized = story_role.casefold().replace(" ", "_")
+        sample_allows_product_cta = cls._sample_contract_allows_product_cta(sample_contract)
+        visual_focus_rule = cls._normalize_metadata_text(slide.get("visual_focus"), limit=320)
+        if (
+            not sample_allows_product_cta
+            and story_role_normalized in {"takeaway", "close", "closing", "cta", "final", "macro_takeaway", "strategic_meaning"}
+            and (
+                cls._is_product_cta_like_line(visual_focus_rule, request=request)
+                or cls._style_reference_visual_focus_needs_sample_reset(
+                    visual_focus_rule,
+                    request=request,
+                    sample_allows_data_or_product=False,
+                )
+            )
+        ):
+            visual_focus_rule = cls._sample_matched_visual_focus(slide, request=request)
         contract = {
             "reason": "sample_metadata_thin",
             "fallback_authority": "selected_sample_identity_plus_slide_story_contract",
@@ -1824,7 +1846,7 @@ class AIOrchestratorService:
                 "text_pressure": cls._carousel_slide_text_pressure(slide),
             },
             "visual_rules": [
-                cls._normalize_metadata_text(slide.get("visual_focus"), limit=320),
+                visual_focus_rule,
                 cls._carousel_story_role_guidance(story_role),
                 "copy the selected sample page's visible composition category first, then adapt the subject matter and approved copy",
                 "avoid generic finance motifs, charts, documents, dashboards, or stock symbols unless they are visibly part of the selected sample page or explicitly requested",
@@ -3258,13 +3280,83 @@ class AIOrchestratorService:
         return not bool(headline_tokens & topic_tokens)
 
     @staticmethod
+    def _canonicalize_number_words_in_exact_claim_marker(value: str) -> str:
+        units = {
+            "zero": 0,
+            "one": 1,
+            "two": 2,
+            "three": 3,
+            "four": 4,
+            "five": 5,
+            "six": 6,
+            "seven": 7,
+            "eight": 8,
+            "nine": 9,
+            "ten": 10,
+            "eleven": 11,
+            "twelve": 12,
+            "thirteen": 13,
+            "fourteen": 14,
+            "fifteen": 15,
+            "sixteen": 16,
+            "seventeen": 17,
+            "eighteen": 18,
+            "nineteen": 19,
+        }
+        tens = {
+            "twenty": 20,
+            "thirty": 30,
+            "forty": 40,
+            "fifty": 50,
+            "sixty": 60,
+            "seventy": 70,
+            "eighty": 80,
+            "ninety": 90,
+        }
+        number_words = "|".join([*units.keys(), *tens.keys()])
+        unit_words = "|".join(units.keys())
+
+        def replace(match: re.Match[str]) -> str:
+            first = match.group("first")
+            second = match.group("second")
+            suffix = match.group("suffix")
+            number = tens.get(first, units.get(first, 0))
+            if second:
+                number += units.get(second, 0)
+            return f"{number} {suffix}"
+
+        return re.sub(
+            rf"\b(?P<first>{number_words})(?:[\s-]+(?P<second>{unit_words}))?\s+(?P<suffix>billion|million|crore|lakh|trillion|tariff lines|years|skilled professionals|occupations)\b",
+            replace,
+            value,
+            flags=re.IGNORECASE,
+        )
+
+    @staticmethod
     def _canonical_exact_claim_marker(value: Any) -> str:
         marker = " ".join(str(value or "").casefold().replace("us$", "usd ").split())
+        marker = marker.replace("nz$", "nzd ")
         marker = marker.replace("$", "usd ")
         marker = marker.replace("₹", "inr ")
         marker = marker.replace("â‚¹", "inr ")
         marker = re.sub(r"\brs\.?\s*", "inr ", marker)
+        marker = re.sub(r"\b(usd|nzd|inr)\s*(\d+(?:\.\d+)?)\s*b\b", r"\1 \2 billion", marker)
+        marker = re.sub(r"\b(usd|nzd|inr)\s*(\d+(?:\.\d+)?)\s*m\b", r"\1 \2 million", marker)
+        marker = re.sub(r"\b(\d+(?:\.\d+)?)\s*b\b", r"\1 billion", marker)
+        marker = re.sub(r"\b(\d+(?:\.\d+)?)\s*m\b", r"\1 million", marker)
+        marker = AIOrchestratorService._canonicalize_number_words_in_exact_claim_marker(marker)
         return re.sub(r"\s+", " ", marker).strip()
+
+    @staticmethod
+    def _exact_claim_marker_aliases(marker: str) -> set[str]:
+        normalized = " ".join(str(marker or "").split())
+        if not normalized:
+            return set()
+        aliases = {normalized}
+        currencyless = re.sub(r"^(?:usd|nzd|inr)\s+", "", normalized).strip()
+        if currencyless:
+            aliases.add(currencyless)
+        return aliases
 
     @classmethod
     def _exact_claim_markers(cls, value: Any) -> set[str]:
@@ -3276,8 +3368,11 @@ class AIOrchestratorService:
             r"\b\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{4}\b",
             r"\b\d+(?:\.\d+)?\s?%",
             r"\bus\$\s?\d+(?:\.\d+)?(?:\s?(?:billion|million|crore|lakh|trillion))?\b",
+            r"\b(?:usd|nzd|nz\$|inr|rs\.?|â‚¹|\$)\s?\d+(?:\.\d+)?\s?[bm]\b",
+            r"\b\d+(?:\.\d+)?\s?[bm]\b",
             r"\b(?:usd|inr|rs\.?|₹|\$)\s?\d+(?:\.\d+)?(?:\s?(?:billion|million|crore|lakh|trillion))?\b",
             r"\b\d+(?:\.\d+)?\s?(?:billion|million|crore|lakh|trillion|tariff lines|years|skilled professionals|occupations)\b",
+            r"\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:[\s-]+(?:one|two|three|four|five|six|seven|eight|nine))?\s?(?:billion|million|crore|lakh|trillion|tariff lines|years|skilled professionals|occupations)\b",
         )
         for pattern in patterns:
             for match in re.findall(pattern, text, flags=re.IGNORECASE):
@@ -3310,7 +3405,8 @@ class AIOrchestratorService:
                     source_texts.append(fact)
         supported: set[str] = set()
         for text in source_texts:
-            supported.update(cls._exact_claim_markers(text))
+            for marker in cls._exact_claim_markers(text):
+                supported.update(cls._exact_claim_marker_aliases(marker))
         return supported
 
     @classmethod
@@ -3328,7 +3424,7 @@ class AIOrchestratorService:
             request=request,
             compiled_context=compiled_context,
         )
-        return {marker for marker in markers if marker not in supported}
+        return {marker for marker in markers if not (cls._exact_claim_marker_aliases(marker) & supported)}
 
     @classmethod
     def _has_research_fact_context(
@@ -3361,6 +3457,8 @@ class AIOrchestratorService:
             return True
         if cls._visual_focus_is_raw_reference_payload(value):
             return True
+        if "follow selected sample page" in text and "visual authority" in text:
+            return False
         generic_markers = (
             "generic",
             "professional photo",
@@ -11344,19 +11442,28 @@ class AIOrchestratorService:
         output_permissions = output_blueprint.get("visual_permissions") if isinstance(output_blueprint.get("visual_permissions"), dict) else {}
         sample_category = cls._normalize_metadata_text(sample_blueprint.get("layout_category"), limit=80)
         output_category = cls._normalize_metadata_text(output_blueprint.get("layout_category"), limit=80)
+
+        def effective_layout_category(blueprint: dict[str, Any], raw_category: str) -> str:
+            raw = cls._normalize_metadata_text(raw_category, limit=80).casefold()
+            if raw in {"closing_cta_or_product_surface", "dashboard_or_product_surface", "data_dashboard", "product_surface"}:
+                return raw_category
+            return cls._sample_blueprint_layout_mode(blueprint) or raw_category
+
+        effective_sample_category = effective_layout_category(sample_blueprint, sample_category)
+        effective_output_category = effective_layout_category(output_blueprint, output_category)
         issues: list[str] = []
         corrections: list[str] = []
         hard_retry_issues: set[str] = set()
         score_parts: list[float] = []
 
-        if cls._layout_category_compatible(sample_category, output_category):
+        if cls._layout_category_compatible(effective_sample_category, effective_output_category):
             score_parts.append(1.0)
         else:
             score_parts.append(0.15)
             issues.append("layout_category_drift")
             hard_retry_issues.add("layout_category_drift")
             corrections.append(
-                f"Sample page layout is {sample_category}; output reads as {output_category}. Rebuild the slide using the sample page's composition category first."
+                f"Sample page layout is {effective_sample_category}; output reads as {effective_output_category}. Rebuild the slide using the sample page's composition category first."
             )
 
         count_specs = [
@@ -11371,6 +11478,9 @@ class AIOrchestratorService:
         for key, label, tolerance in count_specs:
             expected = int(sample_counts.get(key) or 0)
             actual = int(output_counts.get(key) or 0)
+            if key == "footer_band_count" and legal_footer_overlay_deferred and actual < expected:
+                count_scores.append(1.0)
+                continue
             score = cls._count_similarity(expected, actual, tolerance=tolerance)
             count_scores.append(score)
             if score < 0.58:
@@ -11424,7 +11534,11 @@ class AIOrchestratorService:
             if output_cta_count > max(sample_cta_count, 0):
                 hard_retry_issues.add("cta_grammar_invented")
             score_parts.append(0.35)
-        if not bool(sample_permissions.get("table_allowed")) and output_category == "numbered_or_icon_row_list":
+        if (
+            effective_sample_category != "numbered_or_icon_row_list"
+            and not bool(sample_permissions.get("table_allowed"))
+            and effective_output_category == "numbered_or_icon_row_list"
+        ):
             issues.append("list_or_table_grammar_invented")
             hard_retry_issues.add("list_or_table_grammar_invented")
             corrections.append("Output introduced row/list/table grammar, but the selected sample page does not use that structure.")
@@ -11434,13 +11548,29 @@ class AIOrchestratorService:
         output_ocr = output_blueprint.get("ocr_structure") if isinstance(output_blueprint.get("ocr_structure"), dict) else {}
         sample_text_blocks = sample_ocr.get("readable_text_blocks")
         output_text_blocks = output_ocr.get("readable_text_blocks")
+        module_text_layouts = {"numbered_or_icon_row_list", "card_callout_grid", "vertical_icon_explainer"}
+        sample_module_text_blocks = int(sample_counts.get("text_block_count") or 0)
+        output_module_text_blocks = int(output_counts.get("text_block_count") or 0)
+        text_block_count_source = "ocr"
+        if (
+            effective_sample_category in module_text_layouts
+            and cls._layout_category_compatible(effective_sample_category, effective_output_category)
+            and sample_module_text_blocks > 0
+            and output_module_text_blocks > 0
+        ):
+            sample_text_blocks = sample_module_text_blocks
+            output_text_blocks = output_module_text_blocks
+            text_block_count_source = "module_counts"
         if isinstance(sample_text_blocks, (int, float)) and isinstance(output_text_blocks, (int, float)):
             text_score = cls._count_similarity(int(sample_text_blocks), int(output_text_blocks), tolerance=1)
             score_parts.append(text_score)
             if text_score < 0.62:
                 issues.append("ocr_text_block_count_drift")
                 hard_retry_issues.add("ocr_text_block_count_drift")
-                corrections.append(f"Vision/OCR sees about {int(sample_text_blocks)} readable text blocks in the sample and {int(output_text_blocks)} in the output. Match the sample text-block count and placement.")
+                if text_block_count_source == "module_counts":
+                    corrections.append(f"Sample has about {int(sample_text_blocks)} readable module text blocks; output has about {int(output_text_blocks)}. Match the sample module text count and placement.")
+                else:
+                    corrections.append(f"Vision/OCR sees about {int(sample_text_blocks)} readable text blocks in the sample and {int(output_text_blocks)} in the output. Match the sample text-block count and placement.")
         output_collision = cls._normalize_metadata_text(output_ocr.get("text_overlap_or_collision_risk"), limit=24).casefold()
         if output_collision in {"medium", "high"}:
             issues.append("ocr_text_collision_risk")
@@ -11497,10 +11627,13 @@ class AIOrchestratorService:
             "retry_recommended": retry_recommended,
             "sample_layout_category": sample_category,
             "output_layout_category": output_category,
+            "effective_sample_layout_category": effective_sample_category,
+            "effective_output_layout_category": effective_output_category,
             "sample_density": sample_density,
             "output_density": output_density,
             "sample_module_counts": sample_counts,
             "output_module_counts": output_counts,
+            "text_block_count_source": text_block_count_source,
             "sample_visual_permissions": sample_permissions,
             "output_visual_permissions": output_permissions,
             "effective_sample_cta_count": sample_cta_count,
@@ -11625,6 +11758,21 @@ class AIOrchestratorService:
         horizontal_count = int(counts.get("horizontal_band_count") or 0)
         icon_count = int(counts.get("small_icon_like_count") or 0)
         card_count = int(counts.get("card_like_count") or 0)
+        large_visual_count = int(counts.get("large_visual_count") or 0)
+        zones = blueprint.get("zones") if isinstance(blueprint.get("zones"), list) else []
+        image_body_zone_count = 0
+        for zone in zones:
+            if not isinstance(zone, dict):
+                continue
+            zone_text = " ".join(
+                cls._normalize_metadata_text(zone.get(key), limit=90).casefold()
+                for key in ("role", "description")
+                if cls._normalize_metadata_text(zone.get(key), limit=90)
+            )
+            if ("image+body" in zone_text or "icon" in zone_text) and (
+                "text" in zone_text or "body" in zone_text or "section" in zone_text
+            ):
+                image_body_zone_count += 1
         if (
             layout_category == "numbered_or_icon_row_list"
             or "numbered" in must_match_text
@@ -11634,7 +11782,19 @@ class AIOrchestratorService:
             return "numbered_or_icon_row_list"
         if layout_category == "card_callout_grid" or card_count >= 2:
             return "card_callout_grid"
-        if layout_category in {"editorial_explainer", "timeline_or_winding_process_path"} and horizontal_count >= 3 and icon_count >= 2:
+        if (
+            layout_category in {"editorial_explainer", "timeline_or_winding_process_path"}
+            and horizontal_count >= 3
+            and icon_count >= 2
+        ):
+            return "vertical_icon_explainer"
+        if (
+            layout_category in {"cover_or_hero_visual", "photo_led_cover", "editorial_explainer"}
+            and large_visual_count == 0
+            and horizontal_count >= 3
+            and icon_count >= 2
+            and (image_body_zone_count >= 2 or "icon" in must_match_text or "section" in must_match_text)
+        ):
             return "vertical_icon_explainer"
         return layout_category
 
@@ -13545,6 +13705,7 @@ class AIOrchestratorService:
                     if isinstance(slide_metadata.get("sample_page_blueprint"), dict)
                     else None
                 )
+                legal_footer_text = self._scene_graph_legal_footer_text(final_render_scene_graph)
                 asset, sample_similarity_report, sample_similarity_retry_attempts, final_render_prompt = (
                     self._generate_final_render_image_with_sample_guard(
                         image_provider=image_provider,
@@ -13558,6 +13719,7 @@ class AIOrchestratorService:
                         slide_index=slide_index,
                         slide_count=slide_count,
                         exact_logo_overlay_deferred=exact_logo_overlay_required,
+                        legal_footer_overlay_deferred=bool(legal_footer_text),
                     )
                 )
                 base_asset = GeneratedImageAsset(
@@ -13957,6 +14119,102 @@ class AIOrchestratorService:
         return cls._normalize_metadata_text(topic or "this topic", limit=limit) or "this topic"
 
     @classmethod
+    def _sample_editorial_contract_for_slide(
+        cls,
+        *,
+        request: AIOrchestrationRequest,
+        index: int,
+        slide_count: int,
+    ) -> dict[str, Any]:
+        sequence_pack = cls._template_sequence_pack(request)
+        if not isinstance(sequence_pack, dict):
+            return {}
+        pack_slides = [dict(item) for item in (sequence_pack.get("slides") or []) if isinstance(item, dict)]
+        if not pack_slides:
+            return {}
+        reference_index = cls._proportional_sequence_reference_index(
+            index,
+            output_slide_count=max(slide_count, 1),
+            reference_slide_count=len(pack_slides),
+        )
+        if reference_index < 1 or reference_index > len(pack_slides):
+            return {}
+        return dict(pack_slides[reference_index - 1])
+
+    @classmethod
+    def _sample_editorial_overlaps_request(
+        cls,
+        sample_contract: dict[str, Any],
+        *,
+        request: AIOrchestrationRequest,
+        compiled_context: dict[str, Any] | None = None,
+    ) -> bool:
+        sample_text = " ".join(
+            cls._coerce_text_value(sample_contract.get(key))
+            for key in (
+                "sample_page_headline",
+                "sample_page_supporting",
+                "sample_page_copy",
+                "headline_hint",
+                "sequence_summary",
+            )
+            if cls._coerce_text_value(sample_contract.get(key))
+        )
+        if not sample_text:
+            return False
+        request_text_parts = [request.prompt]
+        for source in (
+            request.research_editorial_brief,
+            request.live_research,
+            (compiled_context or {}).get("research_editorial_brief"),
+            (compiled_context or {}).get("live_research"),
+            (compiled_context or {}).get("research_summary"),
+        ):
+            if source:
+                request_text_parts.append(source)
+        request_text = " ".join(cls._coerce_text_value(part) for part in request_text_parts if cls._coerce_text_value(part))
+        sample_markers = cls._exact_claim_markers(sample_text)
+        request_markers = cls._exact_claim_markers(request_text)
+        if sample_markers and request_markers and sample_markers & request_markers:
+            return True
+        sample_tokens = cls._sequence_pack_semantic_tokens(sample_text)
+        request_tokens = cls._sequence_pack_semantic_tokens(request_text)
+        if not sample_tokens or not request_tokens:
+            return False
+        high_signal_overlap = {
+            token
+            for token in sample_tokens & request_tokens
+            if len(token) <= 4 or token in cls._content_topic_tokens(request)
+        }
+        return len(sample_tokens & request_tokens) >= 2 or bool(high_signal_overlap)
+
+    @classmethod
+    def _topic_specific_headline_from_sample_behavior(
+        cls,
+        *,
+        topic: str,
+        role: str,
+        sample_contract: dict[str, Any],
+    ) -> str:
+        behavior = cls._normalize_metadata_text(sample_contract.get("sample_page_copy_behavior"), limit=48).casefold()
+        editorial_role = cls._normalize_metadata_text(sample_contract.get("sample_page_editorial_role"), limit=48).casefold()
+        has_question = bool(sample_contract.get("sample_page_has_question_hook"))
+        normalized_role = role.casefold().replace(" ", "_")
+        if has_question and (normalized_role in {"hook", "cover", "opening"} or editorial_role == "hook"):
+            return cls._normalize_metadata_text(f"Why does {topic} matter now?", limit=96)
+        if behavior in {"curiosity_gap", "curiosity_to_strategic_signal"} or editorial_role == "undercovered_angle":
+            return cls._normalize_metadata_text(f"What most people miss about {topic}", limit=96)
+        if behavior == "deal_mechanics" or editorial_role == "mechanism":
+            return cls._normalize_metadata_text(f"What's actually inside {topic}", limit=96)
+        if behavior == "strategic_signal" or editorial_role in {"strategic_meaning", "macro_takeaway"}:
+            return cls._normalize_metadata_text(f"{topic}: the bigger signal", limit=96)
+        if normalized_role in {"takeaway", "closing", "cta", "final"}:
+            return cls._normalize_metadata_text(f"What {topic} signals next", limit=96)
+        if normalized_role in {"structure", "context", "detail"}:
+            return cls._normalize_metadata_text(f"The mechanics behind {topic}", limit=96)
+        return cls._normalize_metadata_text(f"One sharper read on {topic}", limit=96)
+
+    @classmethod
     def _sample_aware_headline_for_slide(
         cls,
         *,
@@ -13964,12 +14222,35 @@ class AIOrchestratorService:
         slide: dict[str, Any],
         index: int,
         slide_count: int,
+        compiled_context: dict[str, Any] | None = None,
     ) -> str:
         topic = cls._carousel_topic_label(request)
         role = cls._normalize_metadata_text(
             slide.get("slide_role") or slide.get("role"),
             limit=48,
         ).casefold().replace(" ", "_")
+        sample_contract = cls._sample_editorial_contract_for_slide(
+            request=request,
+            index=index,
+            slide_count=slide_count,
+        )
+        sample_headline = cls._normalize_metadata_text(sample_contract.get("sample_page_headline"), limit=120)
+        if (
+            sample_headline
+            and not cls._is_generic_carousel_education_label(sample_headline)
+            and cls._sample_editorial_overlaps_request(
+                sample_contract,
+                request=request,
+                compiled_context=compiled_context,
+            )
+        ):
+            return sample_headline
+        if sample_contract:
+            return cls._topic_specific_headline_from_sample_behavior(
+                topic=topic,
+                role=role,
+                sample_contract=sample_contract,
+            )
         if index == 1 or role == "hook":
             return cls._normalize_metadata_text(f"What {topic} really changes", limit=96)
         if index == slide_count or role in {"takeaway", "closing", "cta"}:
@@ -14025,6 +14306,77 @@ class AIOrchestratorService:
         return " ".join(kept).strip()
 
     @classmethod
+    def _line_is_research_process_filler(cls, value: Any) -> bool:
+        text = cls._normalize_metadata_text(value, limit=220).casefold()
+        if not text:
+            return False
+        return bool(
+            re.search(
+                r"\b(verified facts? from|sourced from|source(?:d)? by|according to|fact[- ]checked from|research from|data from)\b",
+                text,
+            )
+        )
+
+    @classmethod
+    def _strip_research_process_filler_lines(
+        cls,
+        value: Any,
+        *,
+        sample_allows_source_labels: bool,
+    ) -> Any:
+        if sample_allows_source_labels:
+            return value
+        if isinstance(value, (list, tuple, set)):
+            return [
+                item
+                for item in value
+                if not cls._line_is_research_process_filler(item)
+            ]
+        text = cls._coerce_text_value(value)
+        if not text:
+            return value
+        sentence_parts = re.split(r"(?<=[.!?])\s+", text)
+        kept = [
+            part.strip()
+            for part in sentence_parts
+            if part.strip() and not cls._line_is_research_process_filler(part)
+        ]
+        return " ".join(kept).strip()
+
+    @classmethod
+    def _sample_contract_allows_product_cta(cls, sample_contract: dict[str, Any]) -> bool:
+        if not sample_contract:
+            return True
+        closing_grammar = cls._normalize_metadata_text(sample_contract.get("sample_page_closing_grammar"), limit=40).casefold()
+        editorial_role = cls._normalize_metadata_text(sample_contract.get("sample_page_editorial_role"), limit=40).casefold()
+        behavior = cls._normalize_metadata_text(sample_contract.get("sample_page_copy_behavior"), limit=48).casefold()
+        if not (closing_grammar or editorial_role or behavior):
+            return True
+        return "product" in {closing_grammar, editorial_role, behavior} or closing_grammar == "product_cta" or behavior == "product_cta"
+
+    @classmethod
+    def _is_product_cta_like_line(
+        cls,
+        value: Any,
+        *,
+        request: AIOrchestrationRequest | None = None,
+    ) -> bool:
+        text = cls._normalize_metadata_text(value, limit=220)
+        if not text:
+            return False
+        lowered = text.casefold()
+        if cls._is_promotional_line(text):
+            return True
+        if re.search(r"\b(where to invest|what to do with|why .{1,80} helps|use .{1,80} platform)\b", lowered):
+            return True
+        brand_name = ""
+        if request is not None and isinstance(request.resolved_brand_context, dict):
+            brand_name = cls._normalize_metadata_text(request.resolved_brand_context.get("brand_name"), limit=60)
+        if brand_name and brand_name.casefold() in lowered and re.search(r"\b(invest|platform|helps?|options?|opportunit(?:y|ies))\b", lowered):
+            return True
+        return False
+
+    @classmethod
     def _preflight_text_payload_semantics(
         cls,
         *,
@@ -14039,8 +14391,18 @@ class AIOrchestratorService:
         slides = [dict(item) for item in metadata.get("carousel_slide_specs") or [] if isinstance(item, dict)]
         if not slides:
             return text_payload
+        template_surface_policy = cls._effective_template_surface_policy(
+            request,
+            metadata=metadata,
+        )
         changed = False
         for index, slide in enumerate(slides, start=1):
+            sample_contract = cls._sample_editorial_contract_for_slide(
+                request=request,
+                index=index,
+                slide_count=len(slides),
+            )
+            sample_allows_source_labels = bool(sample_contract.get("sample_page_has_source_labels"))
             headline = cls._normalize_metadata_text(slide.get("headline") or slide.get("title"), limit=120)
             if (
                 cls._is_promotional_line(headline)
@@ -14052,11 +14414,42 @@ class AIOrchestratorService:
                     slide=slide,
                     index=index,
                     slide_count=len(slides),
+                    compiled_context=compiled_context,
                 )
                 changed = True
             if index < len(slides) and cls._normalize_metadata_text(slide.get("cta"), limit=90):
                 slide["cta"] = ""
                 changed = True
+            if index == len(slides) and sample_contract and not cls._sample_contract_allows_product_cta(sample_contract):
+                if cls._normalize_metadata_text(slide.get("cta"), limit=90):
+                    slide["cta"] = ""
+                    changed = True
+                if cls._is_product_cta_like_line(slide.get("headline"), request=request):
+                    slide["headline"] = cls._sample_aware_headline_for_slide(
+                        request=request,
+                        slide=slide,
+                        index=index,
+                        slide_count=len(slides),
+                        compiled_context=compiled_context,
+                    )
+                    changed = True
+
+            for key in ("supporting_line", "body"):
+                cleaned_value = cls._strip_research_process_filler_lines(
+                    slide.get(key),
+                    sample_allows_source_labels=sample_allows_source_labels,
+                )
+                if cleaned_value != slide.get(key):
+                    slide[key] = cleaned_value
+                    changed = True
+            for key in ("body_points", "proof_points", "stat_highlights"):
+                cleaned_items = cls._strip_research_process_filler_lines(
+                    slide.get(key),
+                    sample_allows_source_labels=sample_allows_source_labels,
+                )
+                if cleaned_items != slide.get(key):
+                    slide[key] = cleaned_items
+                    changed = True
 
             unsupported = cls._unsupported_exact_claim_markers(
                 " ".join(
@@ -14086,10 +14479,18 @@ class AIOrchestratorService:
                         changed = True
                 visual_focus = cls._normalize_metadata_text(slide.get("visual_focus"), limit=420)
                 if cls._data_visualization_visual_focus(visual_focus):
-                    slide["visual_focus"] = (
-                        "Sample-matched qualitative evidence modules using only approved facts; avoid invented chart values, "
-                        "unverified axes, or numeric graph labels."
-                    )
+                    if template_surface_policy == "style_reference_only":
+                        visual_slide = dict(slide)
+                        visual_metadata = dict(visual_slide.get("metadata") if isinstance(visual_slide.get("metadata"), dict) else {})
+                        visual_metadata.update(sample_contract)
+                        visual_metadata.setdefault("reference_slide_index", index)
+                        visual_slide["metadata"] = visual_metadata
+                        slide["visual_focus"] = cls._sample_matched_visual_focus(visual_slide, request=request)
+                    else:
+                        slide["visual_focus"] = (
+                            "Sample-matched qualitative evidence modules using only approved facts; avoid invented chart values, "
+                            "unverified axes, or numeric graph labels."
+                        )
                     changed = True
             slides[index - 1] = slide
 
@@ -14098,6 +14499,76 @@ class AIOrchestratorService:
         metadata["carousel_slide_specs"] = slides
         payload["metadata"] = metadata
         return StructuredTextPayload(**payload)
+
+    @classmethod
+    def _merge_targeted_carousel_rewrite_payload(
+        cls,
+        *,
+        previous_payload: StructuredTextPayload,
+        rewritten_payload: dict[str, Any],
+        revision_scope: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not isinstance(rewritten_payload, dict):
+            return rewritten_payload
+        if not bool(revision_scope.get("only_targeted")):
+            return rewritten_payload
+        previous_metadata = previous_payload.metadata if isinstance(previous_payload.metadata, dict) else {}
+        rewritten_metadata = rewritten_payload.get("metadata") if isinstance(rewritten_payload.get("metadata"), dict) else {}
+        previous_slides = [
+            dict(item)
+            for item in (previous_metadata.get("carousel_slide_specs") or previous_metadata.get("slides") or [])
+            if isinstance(item, dict)
+        ]
+        rewritten_slides = [
+            dict(item)
+            for item in (rewritten_metadata.get("carousel_slide_specs") or rewritten_metadata.get("slides") or [])
+            if isinstance(item, dict)
+        ]
+        if not previous_slides or not rewritten_slides:
+            return rewritten_payload
+        if len(rewritten_slides) >= len(previous_slides):
+            return rewritten_payload
+        slide_indexes = [
+            int(value)
+            for value in revision_scope.get("slide_indexes") or []
+            if isinstance(value, int) or (isinstance(value, str) and value.isdigit())
+        ]
+        merged_slides = [dict(item) for item in previous_slides]
+        for offset, rewritten_slide in enumerate(rewritten_slides):
+            slide_number = (
+                cls._int_or_none(rewritten_slide.get("slide_number"))
+                or cls._int_or_none(rewritten_slide.get("slide_index"))
+                or (slide_indexes[offset] if offset < len(slide_indexes) else None)
+            )
+            if not slide_number or slide_number < 1 or slide_number > len(merged_slides):
+                role = cls._normalize_metadata_text(
+                    rewritten_slide.get("slide_role") or rewritten_slide.get("role"),
+                    limit=48,
+                ).casefold().replace(" ", "_")
+                for candidate_index, existing_slide in enumerate(merged_slides, start=1):
+                    existing_role = cls._normalize_metadata_text(
+                        existing_slide.get("slide_role") or existing_slide.get("role"),
+                        limit=48,
+                    ).casefold().replace(" ", "_")
+                    if role and role == existing_role:
+                        slide_number = candidate_index
+                        break
+            if not slide_number or slide_number < 1 or slide_number > len(merged_slides):
+                continue
+            original_slide = dict(merged_slides[slide_number - 1])
+            merged_slides[slide_number - 1] = {
+                **original_slide,
+                **rewritten_slide,
+                "slide_number": slide_number,
+            }
+        merged_payload = dict(rewritten_payload)
+        merged_metadata = {
+            **previous_metadata,
+            **rewritten_metadata,
+            "carousel_slide_specs": merged_slides,
+        }
+        merged_payload["metadata"] = merged_metadata
+        return merged_payload
 
     @classmethod
     def _validate_content_semantics(
@@ -14174,8 +14645,67 @@ class AIOrchestratorService:
                     )
                 )
             raw_structured_slides = [dict(item) for item in (metadata.get("carousel_slide_specs") or []) if isinstance(item, dict)]
+            template_surface_policy = cls._effective_template_surface_policy(
+                request,
+                creative_decision=creative_decision,
+                metadata=metadata if isinstance(metadata, dict) else {},
+            )
+            sequence_pack = cls._template_sequence_pack(
+                request,
+                creative_decision=creative_decision,
+            )
+            sequence_pack_slide_count = (
+                cls._int_or_none(sequence_pack.get("slide_count"))
+                if isinstance(sequence_pack, dict)
+                else None
+            ) or (
+                len([item for item in sequence_pack.get("slides", []) if isinstance(item, dict)])
+                if isinstance(sequence_pack, dict)
+                else 0
+            )
+            raw_sequence_count_matches_sample = not (
+                template_surface_policy == "style_reference_only"
+                and sequence_pack_slide_count
+                and raw_structured_slides
+                and len(raw_structured_slides) != sequence_pack_slide_count
+                and not cls._explicit_requested_slide_count(request)
+            )
+            if (
+                template_surface_policy == "style_reference_only"
+                and sequence_pack_slide_count
+                and raw_structured_slides
+                and len(raw_structured_slides) != sequence_pack_slide_count
+                and not cls._explicit_requested_slide_count(request)
+            ):
+                issues.append(
+                    cls._clean_content_semantic_issue(
+                        code="carousel_sample_sequence_count_drift",
+                        message=(
+                            "Generated carousel slide count does not match the selected sample/reference sequence count; "
+                            "for style-reference carousels each output slide must map to the same-position sample page unless the user explicitly requested a different count."
+                        ),
+                        targeted_fields=["metadata"],
+                    )
+                )
+            normalized_slides_for_raw_checks = cls._build_carousel_slide_specs(
+                text_payload,
+                request=request,
+                creative_decision=creative_decision,
+            )
+            normalized_slide_by_index = {
+                index: slide
+                for index, slide in enumerate(normalized_slides_for_raw_checks, start=1)
+                if isinstance(slide, dict)
+            }
             raw_seen_supports: set[str] = set()
             for index, raw_slide in enumerate(raw_structured_slides, start=1):
+                normalized_slide = normalized_slide_by_index.get(index) or {}
+                raw_sample_contract = cls._sample_editorial_contract_for_slide(
+                    request=request,
+                    index=index,
+                    slide_count=len(raw_structured_slides),
+                )
+                raw_sample_allows_source_labels = bool(raw_sample_contract.get("sample_page_has_source_labels"))
                 raw_story_role = cls._normalize_metadata_text(
                     raw_slide.get("slide_role") or raw_slide.get("role"),
                     limit=48,
@@ -14189,12 +14719,55 @@ class AIOrchestratorService:
                     limit=220,
                 )
                 raw_cta = cls._normalize_metadata_text(raw_slide.get("cta"), limit=90)
+                normalized_headline = cls._normalize_metadata_text(
+                    normalized_slide.get("headline"),
+                    limit=120,
+                )
+                normalized_cta = cls._normalize_metadata_text(normalized_slide.get("cta"), limit=90)
+                normalized_visual_focus = normalized_slide.get("visual_focus")
                 raw_visual_focus = raw_slide.get("visual_focus")
-                if index < len(raw_structured_slides) and raw_cta:
+                raw_visible_lines = [
+                    raw_headline,
+                    raw_support,
+                    cls._coerce_text_value(raw_slide.get("body")),
+                    *cls._normalize_metadata_list(raw_slide.get("body_points"), limit=8),
+                    *cls._normalize_metadata_list(raw_slide.get("proof_points"), limit=8),
+                    *cls._normalize_metadata_list(raw_slide.get("stat_highlights"), limit=8),
+                ]
+                raw_module_lines = cls._dedupe_metadata_collection(
+                    [
+                        *cls._normalize_metadata_list(raw_slide.get("proof_points"), limit=8),
+                        *cls._normalize_metadata_list(raw_slide.get("body_points"), limit=8),
+                        *cls._normalize_metadata_list(raw_slide.get("stat_highlights"), limit=8),
+                    ],
+                    blocked_texts=[raw_headline, raw_support, raw_cta],
+                    limit=8,
+                )
+                if index < len(raw_structured_slides) and raw_cta and normalized_cta:
                     issues.append(
                         cls._clean_content_semantic_issue(
                             code="carousel_raw_interior_cta",
                             message=f"Generated slide {index} still includes CTA copy before the closing slide.",
+                            targeted_fields=["metadata"],
+                            slide_indexes=[index],
+                            slide_targets=[raw_story_role or f"slide_{index}"],
+                        )
+                    )
+                if (
+                    index == len(raw_structured_slides)
+                    and raw_sample_contract
+                    and not cls._sample_contract_allows_product_cta(raw_sample_contract)
+                    and (raw_cta or cls._is_product_cta_like_line(raw_headline, request=request))
+                    and (
+                        not raw_sequence_count_matches_sample
+                        or normalized_cta
+                        or cls._is_product_cta_like_line(normalized_headline, request=request)
+                    )
+                ):
+                    issues.append(
+                        cls._clean_content_semantic_issue(
+                            code="carousel_raw_sample_closing_cta_drift",
+                            message=f"Generated slide {index} turns a sample macro/editorial close into product or platform promotion.",
                             targeted_fields=["metadata"],
                             slide_indexes=[index],
                             slide_targets=[raw_story_role or f"slide_{index}"],
@@ -14216,6 +14789,48 @@ class AIOrchestratorService:
                             code="carousel_raw_reference_visual_focus",
                             message=f"Generated slide {index} uses a raw reference image/path as visual_focus instead of a content-specific visual direction.",
                             targeted_fields=["metadata"],
+                            slide_indexes=[index],
+                            slide_targets=[raw_story_role or f"slide_{index}"],
+                        )
+                    )
+                if (
+                    template_surface_policy == "style_reference_only"
+                    and raw_sample_contract
+                    and cls._style_reference_visual_focus_needs_sample_reset(
+                        raw_visual_focus,
+                        request=request,
+                        sample_allows_data_or_product=cls._sample_contract_allows_product_cta(raw_sample_contract),
+                    )
+                    and cls._style_reference_visual_focus_needs_sample_reset(
+                        normalized_visual_focus,
+                        request=request,
+                        sample_allows_data_or_product=cls._sample_page_visualizes_data_or_product(normalized_slide)
+                        or cls._sample_contract_allows_product_cta(raw_sample_contract),
+                    )
+                ):
+                    issues.append(
+                        cls._clean_content_semantic_issue(
+                            code="carousel_raw_sample_disallowed_visual_system",
+                            message=f"Generated slide {index} asks for chart/dashboard/laptop/product-style imagery not permitted by the selected sample page grammar.",
+                            targeted_fields=["metadata"],
+                            slide_indexes=[index],
+                            slide_targets=[raw_story_role or f"slide_{index}"],
+                        )
+                    )
+                raw_copy_density = cls._normalize_metadata_text(raw_sample_contract.get("sample_page_copy_density"), limit=32).casefold()
+                raw_behavior = cls._normalize_metadata_text(raw_sample_contract.get("sample_page_copy_behavior"), limit=48).casefold()
+                raw_expected_module_min = 3 if raw_copy_density == "high" or raw_behavior in {"deal_mechanics", "curiosity_gap"} else 2 if raw_copy_density == "medium" else 0
+                if (
+                    template_surface_policy == "style_reference_only"
+                    and raw_expected_module_min
+                    and raw_story_role not in {"hook", "cover", "opening"}
+                    and len(raw_module_lines) < raw_expected_module_min
+                ):
+                    issues.append(
+                        cls._clean_content_semantic_issue(
+                            code="carousel_raw_sample_density_drift",
+                            message=f"Generated slide {index} is too thin for the selected sample page's copy density and module rhythm.",
+                            targeted_fields=["body", "metadata"],
                             slide_indexes=[index],
                             slide_targets=[raw_story_role or f"slide_{index}"],
                         )
@@ -14242,6 +14857,19 @@ class AIOrchestratorService:
                     )
                 if raw_support:
                     raw_seen_supports.add(raw_support.casefold())
+                if (
+                    not raw_sample_allows_source_labels
+                    and any(cls._line_is_research_process_filler(line) for line in raw_visible_lines)
+                ):
+                    issues.append(
+                        cls._clean_content_semantic_issue(
+                            code="carousel_research_process_filler",
+                            message=f"Generated slide {index} uses source-process wording as visible creative copy instead of turning evidence into brand-facing insight.",
+                            targeted_fields=["body", "metadata"],
+                            slide_indexes=[index],
+                            slide_targets=[raw_story_role or f"slide_{index}"],
+                        )
+                    )
             slides = cls._build_carousel_slide_specs(
                 text_payload,
                 request=request,
@@ -14284,6 +14912,11 @@ class AIOrchestratorService:
             seen_supports: set[str] = set()
             for index, slide in enumerate(slides, start=1):
                 slide_metadata = slide.get("metadata") if isinstance(slide.get("metadata"), dict) else {}
+                sample_contract = cls._sample_editorial_contract_for_slide(
+                    request=request,
+                    index=index,
+                    slide_count=len(slides),
+                )
                 story_role = cls._normalize_metadata_text(
                     slide_metadata.get("story_role") or slide.get("role"),
                     limit=48,
@@ -14317,6 +14950,29 @@ class AIOrchestratorService:
                         *cls._claim_evidence_pair_lines(claim_pairs, limit=2),
                     ]
                 )
+                if (
+                    not bool(sample_contract.get("sample_page_has_source_labels"))
+                    and any(
+                        cls._line_is_research_process_filler(line)
+                        for line in [
+                            headline,
+                            support,
+                            body_text_for_evidence,
+                            *proof_points,
+                            *body_points,
+                            *stat_highlights,
+                        ]
+                    )
+                ):
+                    issues.append(
+                        cls._clean_content_semantic_issue(
+                            code="carousel_research_process_filler",
+                            message=f"Slide {index} uses source-process wording as visible creative copy instead of brand-facing insight.",
+                            targeted_fields=["body", "metadata"],
+                            slide_indexes=[index],
+                            slide_targets=[story_role],
+                        )
+                    )
                 unsupported_slide_markers = cls._unsupported_exact_claim_markers(
                     slide_text_for_facts,
                     request=request,
@@ -14445,6 +15101,25 @@ class AIOrchestratorService:
                             slide_targets=[story_role],
                         )
                     )
+                if (
+                    template_surface_policy == "style_reference_only"
+                    and sample_contract
+                    and cls._style_reference_visual_focus_needs_sample_reset(
+                        visual_focus,
+                        request=request,
+                        sample_allows_data_or_product=cls._sample_page_visualizes_data_or_product(slide)
+                        or cls._sample_contract_allows_product_cta(sample_contract),
+                    )
+                ):
+                    issues.append(
+                        cls._clean_content_semantic_issue(
+                            code="carousel_sample_disallowed_visual_system",
+                            message=f"Slide {index} asks for chart/dashboard/laptop/product-style imagery that the selected sample page does not authorize.",
+                            targeted_fields=["metadata"],
+                            slide_indexes=[index],
+                            slide_targets=[story_role],
+                        )
+                    )
                 if cls._visual_focus_is_raw_reference_payload(raw_slide_visual_focus):
                     issues.append(
                         cls._clean_content_semantic_issue(
@@ -14465,14 +15140,21 @@ class AIOrchestratorService:
                             slide_targets=[story_role],
                         )
                     )
+                closing_allows_product_cta = cls._sample_contract_allows_product_cta(sample_contract)
+                closing_needs_cta = closing_allows_product_cta or not sample_contract
                 if story_role in {"takeaway", "close", "closing", "cta", "final"} and (
-                    not cls._normalize_metadata_text(slide.get("cta"), limit=90)
-                    or cls._is_promotional_line(headline)
+                    (closing_needs_cta and not cls._normalize_metadata_text(slide.get("cta"), limit=90))
+                    or (not closing_allows_product_cta and (cls._is_product_cta_like_line(headline, request=request) or cls._normalize_metadata_text(slide.get("cta"), limit=90)))
+                    or (closing_allows_product_cta and cls._is_promotional_line(headline))
                 ):
                     issues.append(
                         cls._clean_content_semantic_issue(
                             code="carousel_weak_closing_payoff",
-                            message=f"Slide {index} closing slide lacks a distinct decision payoff and final CTA posture.",
+                            message=(
+                                f"Slide {index} closing slide drifts from the selected sample's closing grammar."
+                                if sample_contract
+                                else f"Slide {index} closing slide lacks a distinct decision payoff and final CTA posture."
+                            ),
                             targeted_fields=["metadata"],
                             slide_indexes=[index],
                             slide_targets=[story_role],
@@ -14744,8 +15426,18 @@ class AIOrchestratorService:
                 compiled_context=compiled_context,
                 prompt=request.prompt,
             )
+            text_dict = self._merge_targeted_carousel_rewrite_payload(
+                previous_payload=text_payload,
+                rewritten_payload=text_dict,
+                revision_scope=report.get("revision_scope") if isinstance(report.get("revision_scope"), dict) else {},
+            )
             text_payload = StructuredTextPayload(**text_dict)
             text_payload = self._repair_prompt_echo_text_payload(text_payload, prompt=request.prompt)
+            text_payload = self._preflight_text_payload_semantics(
+                request=request,
+                text_payload=text_payload,
+                compiled_context=compiled_context,
+            )
             report = self._validate_content_semantics(
                 request=request,
                 text_payload=text_payload,
@@ -16026,6 +16718,7 @@ class AIOrchestratorService:
                         if isinstance(slide_metadata.get("sample_page_blueprint"), dict)
                         else None
                     )
+                    legal_footer_text = self._scene_graph_legal_footer_text(final_render_scene_graph)
                     asset, sample_similarity_report, sample_similarity_retry_attempts, final_render_prompt = (
                         self._generate_final_render_image_with_sample_guard(
                             image_provider=image_provider,
@@ -16039,6 +16732,7 @@ class AIOrchestratorService:
                             slide_index=slide_index,
                             slide_count=slide_count,
                             exact_logo_overlay_deferred=exact_logo_overlay_required,
+                            legal_footer_overlay_deferred=bool(legal_footer_text),
                         )
                     )
                     base_asset = GeneratedImageAsset(
@@ -18940,6 +19634,15 @@ class AIOrchestratorService:
                     "reference_structural_cues": list(pack_slide.get("structural_cues") or []),
                     "reference_sequence_summary": str(pack_slide.get("sequence_summary") or ""),
                     "reference_headline_hint": str(pack_slide.get("headline_hint") or ""),
+                    "sample_page_headline": str(pack_slide.get("sample_page_headline") or ""),
+                    "sample_page_supporting": str(pack_slide.get("sample_page_supporting") or ""),
+                    "sample_page_copy": str(pack_slide.get("sample_page_copy") or ""),
+                    "sample_page_editorial_role": str(pack_slide.get("sample_page_editorial_role") or ""),
+                    "sample_page_copy_behavior": str(pack_slide.get("sample_page_copy_behavior") or ""),
+                    "sample_page_copy_density": str(pack_slide.get("sample_page_copy_density") or ""),
+                    "sample_page_closing_grammar": str(pack_slide.get("sample_page_closing_grammar") or ""),
+                    "sample_page_has_question_hook": bool(pack_slide.get("sample_page_has_question_hook")),
+                    "sample_page_has_source_labels": bool(pack_slide.get("sample_page_has_source_labels")),
                     "reference_composition_logic": pack_slide.get("composition_logic"),
                     "reference_visual_craft": pack_slide.get("visual_craft"),
                     "reference_subject_semantics": pack_slide.get("subject_semantics"),
@@ -18957,6 +19660,195 @@ class AIOrchestratorService:
             slide_copy["metadata"] = slide_metadata
             enriched.append(slide_copy)
         return enriched
+
+    @classmethod
+    def _slide_sample_editorial_contract(cls, slide: dict[str, Any]) -> dict[str, Any]:
+        metadata = slide.get("metadata") if isinstance(slide.get("metadata"), dict) else {}
+        return {
+            "sample_page_headline": metadata.get("sample_page_headline"),
+            "sample_page_supporting": metadata.get("sample_page_supporting"),
+            "sample_page_copy": metadata.get("sample_page_copy"),
+            "sample_page_editorial_role": metadata.get("sample_page_editorial_role"),
+            "sample_page_copy_behavior": metadata.get("sample_page_copy_behavior"),
+            "sample_page_copy_density": metadata.get("sample_page_copy_density"),
+            "sample_page_closing_grammar": metadata.get("sample_page_closing_grammar"),
+            "sample_page_has_question_hook": metadata.get("sample_page_has_question_hook"),
+            "sample_page_has_source_labels": metadata.get("sample_page_has_source_labels"),
+        }
+
+    @classmethod
+    def _sample_page_visualizes_data_or_product(cls, slide: dict[str, Any]) -> bool:
+        metadata = slide.get("metadata") if isinstance(slide.get("metadata"), dict) else {}
+        blueprint = metadata.get("sample_page_blueprint") if isinstance(metadata.get("sample_page_blueprint"), dict) else {}
+        category = cls._normalize_metadata_text(
+            blueprint.get("layout_category") or blueprint.get("layout_mode"),
+            limit=64,
+        ).casefold()
+        if category in {
+            "data_dashboard",
+            "dashboard_or_product_surface",
+            "product_surface",
+            "chart_or_graph",
+            "table_or_matrix",
+        }:
+            return True
+        sample_text = " ".join(
+            cls._coerce_text_value(metadata.get(key))
+            for key in (
+                "sample_page_headline",
+                "sample_page_supporting",
+                "sample_page_copy",
+                "reference_sequence_summary",
+            )
+        ).casefold()
+        return bool(
+            re.search(
+                r"\b(chart|graph|dashboard|table|matrix|screen|interface|terminal|portfolio|product)\b",
+                sample_text,
+            )
+        )
+
+    @classmethod
+    def _style_reference_visual_focus_needs_sample_reset(
+        cls,
+        visual_focus: Any,
+        *,
+        request: AIOrchestrationRequest | None = None,
+        sample_allows_data_or_product: bool,
+    ) -> bool:
+        focus = cls._normalize_metadata_text(visual_focus, limit=520).casefold()
+        if not focus:
+            return True
+        if "follow selected sample page" in focus and "visual authority" in focus:
+            return False
+        if sample_allows_data_or_product:
+            return False
+        if cls._data_visualization_requested(request.prompt if request is not None else ""):
+            return False
+        return bool(
+            re.search(
+                r"\b("
+                r"chart|charts|graph|graphs|dashboard|table|matrix|axis|axes|"
+                r"bar chart|line chart|pie chart|analytics|metric dashboard|"
+                r"laptop|screen|interface|terminal|trading|portfolio|investment platform|"
+                r"product|product surface|growth arrow|generic infographic"
+                r")\b",
+                focus,
+            )
+        )
+
+    @classmethod
+    def _sample_matched_visual_focus(
+        cls,
+        slide: dict[str, Any],
+        *,
+        request: AIOrchestrationRequest | None = None,
+    ) -> str:
+        metadata = slide.get("metadata") if isinstance(slide.get("metadata"), dict) else {}
+        sample_contract = cls._slide_sample_editorial_contract(slide)
+        role = cls._normalize_metadata_text(
+            sample_contract.get("sample_page_editorial_role")
+            or metadata.get("story_role")
+            or slide.get("role"),
+            limit=48,
+        ).casefold().replace(" ", "_")
+        behavior = cls._normalize_metadata_text(
+            sample_contract.get("sample_page_copy_behavior"),
+            limit=48,
+        ).casefold().replace(" ", "_")
+        density = cls._normalize_metadata_text(
+            sample_contract.get("sample_page_copy_density"),
+            limit=32,
+        )
+        reference_index = cls._int_or_none(metadata.get("reference_slide_index")) or cls._int_or_none(slide.get("slide_index"))
+        headline = cls._normalize_metadata_text(slide.get("headline"), limit=120)
+        supporting_line = cls._normalize_metadata_text(slide.get("supporting_line"), limit=180)
+        module_lines = cls._carousel_slide_visible_module_lines(slide, limit=5)
+        sample_allows_data_or_product = cls._sample_page_visualizes_data_or_product(slide)
+        if role in {"hook", "cover", "opening"}:
+            execution = (
+                "use the selected sample page's opening hero grammar, image scale, negative space, "
+                "brand/logo reservation, and headline tension"
+            )
+        elif behavior in {"deal_mechanics", "mechanism"} or role in {"structure", "mechanism"}:
+            execution = (
+                "use the selected sample page's mechanism grammar: the same row/card/module count, "
+                "specific clauses or sectors as separate scanable units, and no repeated filler"
+            )
+        elif behavior in {"curiosity_gap", "undercovered_angle"} or role in {"undercovered_angle", "analysis"}:
+            execution = (
+                "use the selected sample page's reveal grammar: hidden implications, non-obvious clauses, "
+                "and analytical callouts instead of an obvious summary"
+            )
+        elif behavior in {"strategic_signal", "curiosity_to_strategic_signal"} or role in {
+            "takeaway",
+            "strategic_meaning",
+            "macro_takeaway",
+            "closing",
+        }:
+            execution = (
+                "use the selected sample page's macro-takeaway grammar: wider strategic consequence, "
+                "future signal, and subtle brand presence without platform promotion"
+            )
+        else:
+            execution = "translate the approved topic into the selected sample page's exact visual grammar"
+        avoid = (
+            ""
+            if sample_allows_data_or_product
+            else " Avoid laptop, dashboard, chart, table, trading-screen, and product-surface imagery unless the selected sample page visibly uses it."
+        )
+        topic = cls._carousel_topic_label(request) if request is not None else ""
+        parts = [
+            f"Follow selected sample page {reference_index} as visual authority" if reference_index else "Follow the selected sample page as visual authority",
+            f"editorial behavior: {behavior}" if behavior else "",
+            f"copy density: {density}" if density else "",
+            execution,
+            f"approved headline: {headline}" if headline else "",
+            f"supporting idea: {supporting_line}" if supporting_line else "",
+            f"module content: {'; '.join(module_lines)}" if module_lines else "",
+            f"topic: {topic}" if topic else "",
+            avoid,
+        ]
+        return cls._normalize_metadata_text(". ".join(part for part in parts if part), limit=520)
+
+    @classmethod
+    def _sanitize_style_reference_sample_slide_specs(
+        cls,
+        slides: list[dict[str, Any]],
+        *,
+        request: AIOrchestrationRequest | None = None,
+    ) -> list[dict[str, Any]]:
+        if not slides:
+            return []
+        sanitized: list[dict[str, Any]] = []
+        slide_count = len([slide for slide in slides if isinstance(slide, dict)])
+        for index, slide in enumerate(slides, start=1):
+            if not isinstance(slide, dict):
+                continue
+            cleaned = dict(slide)
+            sample_contract = cls._slide_sample_editorial_contract(cleaned)
+            if index < slide_count and cls._normalize_metadata_text(cleaned.get("cta"), limit=90):
+                cleaned["cta"] = ""
+            if index == slide_count and sample_contract and not cls._sample_contract_allows_product_cta(sample_contract):
+                cleaned["cta"] = ""
+                if cls._is_product_cta_like_line(cleaned.get("headline"), request=request):
+                    cleaned["headline"] = cls._topic_specific_headline_from_sample_behavior(
+                        topic=cls._carousel_topic_label(request) if request is not None else "this story",
+                        role=str(cleaned.get("role") or "closing"),
+                        sample_contract=sample_contract,
+                    )
+            sample_allows_data_or_product = cls._sample_page_visualizes_data_or_product(cleaned)
+            if cls._style_reference_visual_focus_needs_sample_reset(
+                cleaned.get("visual_focus"),
+                request=request,
+                sample_allows_data_or_product=sample_allows_data_or_product,
+            ):
+                cleaned["visual_focus"] = cls._sample_matched_visual_focus(
+                    cleaned,
+                    request=request,
+                )
+            sanitized.append(cleaned)
+        return sanitized
 
     @classmethod
     def _align_carousel_slide_specs_to_selected_references(
@@ -20558,6 +21450,8 @@ class AIOrchestratorService:
         elif template_surface_policy == "style_reference_only":
             if prompt_requested_slide_count:
                 raw_target_slide_count = prompt_requested_slide_count
+            elif sequence_pack_slide_count:
+                raw_target_slide_count = sequence_pack_slide_count
             elif structured_slide_count:
                 bounded_targets = [
                     count
@@ -20716,6 +21610,11 @@ class AIOrchestratorService:
             sequence_pack_slides=sequence_pack_slides,
             carousel_archetype=carousel_archetype,
         )
+        if template_surface_policy == "style_reference_only":
+            normalized_slides = cls._sanitize_style_reference_sample_slide_specs(
+                normalized_slides,
+                request=request,
+            )
         normalized_slides = cls._align_carousel_slide_specs_to_selected_references(
             normalized_slides,
             request=request,
@@ -21050,6 +21949,19 @@ class AIOrchestratorService:
             limit=80,
         ).casefold()
         sample_layout_mode = AIOrchestratorService._sample_blueprint_layout_mode(sample_page_blueprint)
+        story_role_normalized = AIOrchestratorService._normalize_metadata_text(story_role, limit=48).casefold().replace(" ", "_")
+        sample_contract_for_prompt = {
+            "sample_page_editorial_role": slide_metadata.get("sample_page_editorial_role"),
+            "sample_page_copy_behavior": slide_metadata.get("sample_page_copy_behavior"),
+            "sample_page_copy_density": slide_metadata.get("sample_page_copy_density"),
+            "sample_page_closing_grammar": slide_metadata.get("sample_page_closing_grammar"),
+        }
+        sample_allows_product_cta = AIOrchestratorService._sample_contract_allows_product_cta(sample_contract_for_prompt)
+        closing_sample_disallows_product = (
+            style_reference_sample_active
+            and not sample_allows_product_cta
+            and story_role_normalized in {"takeaway", "close", "closing", "cta", "final", "macro_takeaway", "strategic_meaning"}
+        )
         if style_reference_sample_active and sample_layout_mode == "numbered_or_icon_row_list":
             story_role_visual_execution = (
                 "Execution guidance from selected sample page: "
@@ -21068,6 +21980,34 @@ class AIOrchestratorService:
                 + AIOrchestratorService._sample_blueprint_layout_instruction(sample_page_blueprint)
                 + " Render one concise approved factual line per observed icon/text module."
             )
+        elif closing_sample_disallows_product:
+            story_role_visual_execution = (
+                "Execution guidance from selected sample page: preserve the sample's macro-takeaway closing grammar. "
+                "Show wider strategic consequence, future signal, and subtle brand presence without platform, product, dashboard, laptop, or investment-CTA treatment."
+            )
+        visual_focus_for_prompt = AIOrchestratorService._overlay_prompt_safe_visual_focus(slide)
+        if closing_sample_disallows_product and (
+            AIOrchestratorService._is_product_cta_like_line(visual_focus_for_prompt, request=request)
+            or AIOrchestratorService._style_reference_visual_focus_needs_sample_reset(
+                visual_focus_for_prompt,
+                request=request,
+                sample_allows_data_or_product=False,
+            )
+        ):
+            visual_focus_for_prompt = AIOrchestratorService._sample_matched_visual_focus(
+                slide,
+                request=request,
+            )
+        transition_note_for_prompt = AIOrchestratorService._normalize_metadata_text(slide.get("transition_note"), limit=160)
+        if closing_sample_disallows_product and (
+            AIOrchestratorService._is_product_cta_like_line(transition_note_for_prompt, request=request)
+            or AIOrchestratorService._style_reference_visual_focus_needs_sample_reset(
+                transition_note_for_prompt,
+                request=request,
+                sample_allows_data_or_product=False,
+            )
+        ):
+            transition_note_for_prompt = ""
         use_backend_text_overlay = AIOrchestratorService._should_use_backend_text_overlay_for_ai_final_render(
             request,
             creative_decision,
@@ -21134,9 +22074,22 @@ class AIOrchestratorService:
             if sample_layout_instruction
             else ""
         )
+        sample_text_block_count = int(
+            (sample_page_blueprint.get("module_counts") if isinstance(sample_page_blueprint.get("module_counts"), dict) else {}).get("text_block_count")
+            or 0
+        )
+        sample_support_only_cover = (
+            style_reference_sample_active
+            and sample_layout_mode in {"cover_or_hero_visual", "photo_led_cover"}
+            and 0 < sample_text_block_count <= 2
+        )
         carousel_body_for_text_contract = (
             ""
-            if style_reference_sample_active and sample_layout_mode in {"numbered_or_icon_row_list", "card_callout_grid", "vertical_icon_explainer"}
+            if (
+                style_reference_sample_active
+                and sample_layout_mode in {"numbered_or_icon_row_list", "card_callout_grid", "vertical_icon_explainer"}
+            )
+            or sample_support_only_cover
             else AIOrchestratorService._carousel_slide_body_text(slide, fallback_text="")
         )
         text_render_contract = (
@@ -21334,6 +22287,20 @@ class AIOrchestratorService:
             if style_reference_sample_active
             else ""
         )
+        sample_editorial_render_contract = ""
+        if style_reference_sample_active:
+            sample_editorial_parts = [
+                f"editorial_role={AIOrchestratorService._normalize_metadata_text(slide_metadata.get('sample_page_editorial_role'), limit=40)}",
+                f"copy_behavior={AIOrchestratorService._normalize_metadata_text(slide_metadata.get('sample_page_copy_behavior'), limit=48)}",
+                f"copy_density={AIOrchestratorService._normalize_metadata_text(slide_metadata.get('sample_page_copy_density'), limit=24)}",
+                f"closing_grammar={AIOrchestratorService._normalize_metadata_text(slide_metadata.get('sample_page_closing_grammar'), limit=40)}",
+            ]
+            sample_editorial_summary = "; ".join(part for part in sample_editorial_parts if not part.endswith("="))
+            if sample_editorial_summary:
+                sample_editorial_render_contract = (
+                    f"SELECTED SAMPLE EDITORIAL CONTRACT: {sample_editorial_summary}. "
+                    "This controls creative posture: hook pages need the sample's entry tension and hero/image weight; mechanism pages need the sample's density and module grammar; undercovered-angle pages need analytical reveal behavior; macro-takeaway closing pages must not become product/platform promotion unless the sample closing grammar is product_cta."
+                )
         role_visual_language_guidance = (
             "Story-role visual language is secondary to the selected sample page: keep the sample page's visual-slot structure and module rhythm first, then adapt subject matter to this slide's story role."
             if style_reference_sample_active
@@ -21373,6 +22340,7 @@ class AIOrchestratorService:
             sample_page_visual_obedience,
             sample_aware_data_visual_rule,
             sample_surface_adaptation_guard,
+            sample_editorial_render_contract,
             sample_metadata_guard,
             topic_anchor_guidance,
             reference_anchor_guidance,
@@ -21449,14 +22417,14 @@ class AIOrchestratorService:
             *sequence_alignment_sections,
             *sample_alignment_sections,
             (
-                f"Visual focus for this slide: {AIOrchestratorService._overlay_prompt_safe_visual_focus(slide)}."
-                if AIOrchestratorService._overlay_prompt_safe_visual_focus(slide)
+                f"Visual focus for this slide: {visual_focus_for_prompt}."
+                if visual_focus_for_prompt
                 else ""
             ),
             story_role_visual_execution,
             (
-                f"Transition note from the sequence: {AIOrchestratorService._normalize_metadata_text(slide.get('transition_note'), limit=160)}."
-                if AIOrchestratorService._normalize_metadata_text(slide.get("transition_note"), limit=160)
+                f"Transition note from the sequence: {transition_note_for_prompt}."
+                if transition_note_for_prompt
                 else ""
             ),
             f"Brand palette to honor: {palette}.",

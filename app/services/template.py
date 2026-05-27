@@ -724,6 +724,49 @@ class TemplateService:
         return labeled
 
     @classmethod
+    def _calibrate_recommendation_confidence(
+        cls,
+        recommendations: list[TemplateRecommendationResponse],
+    ) -> list[TemplateRecommendationResponse]:
+        if not recommendations:
+            return []
+        calibrated: list[TemplateRecommendationResponse] = []
+        ranked_scores = [
+            max(
+                0.0,
+                float((item.metadata or {}).get("adaptation_score") or item.score or 0.0),
+            )
+            for item in recommendations
+        ]
+        top_score = max(ranked_scores) if ranked_scores else 0.0
+        bottom_score = min(ranked_scores) if ranked_scores else 0.0
+        spread = max(top_score - bottom_score, 0.0)
+        for index, (recommendation, ranked_score) in enumerate(zip(recommendations, ranked_scores, strict=False)):
+            if any("user-pinned" in str(reason).casefold() for reason in (recommendation.reasons or [])):
+                confidence = 0.99
+            else:
+                absolute_confidence = 0.52 + (min(ranked_score, 24.0) / 24.0) * 0.40
+                if recommendation.match_type == "exact_template":
+                    absolute_confidence += 0.04
+                elif recommendation.match_type == "adapted_template":
+                    absolute_confidence += 0.02
+                elif recommendation.match_type == "reference_only":
+                    absolute_confidence -= 0.08
+                relative_bonus = 0.0
+                if spread >= 0.5:
+                    relative_bonus = ((ranked_score - bottom_score) / spread) * 0.04
+                confidence = absolute_confidence + relative_bonus - (index * 0.015)
+                if index == 0:
+                    confidence = max(confidence, 0.88)
+                confidence = max(0.45, min(confidence, 0.96))
+            calibrated.append(
+                recommendation.model_copy(
+                    update={"decision_confidence": round(confidence, 2)}
+                )
+            )
+        return calibrated
+
+    @classmethod
     def _score_template(
         cls,
         prompt: str,
@@ -1271,7 +1314,7 @@ class TemplateService:
             # Pinned templates must always be exact_template or at minimum adapted_template
             if is_pinned and match_type not in {"exact_template", "adapted_template"}:
                 match_type = "exact_template"
-            decision_confidence = round(min(score / 14.0, 1.0), 2)
+            decision_confidence = round(max(0.0, min(score / 24.0, 0.96)), 2)
             adaptation_score = self._adaptation_score_for_recommendation(
                 requested_format_family=requested_format_family,
                 template_profile=template_profile,
@@ -1352,6 +1395,7 @@ class TemplateService:
             recommendations,
             requested_format_family=requested_format_family,
         )
+        recommendations = self._calibrate_recommendation_confidence(recommendations)
         logger.info(
             "template.recommend.complete brand_space_id=%s prompt_chars=%s platform=%s format=%s candidate_count=%s recommendations=%s",
             brand_space_id,

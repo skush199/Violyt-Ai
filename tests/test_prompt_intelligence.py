@@ -81,10 +81,86 @@ def test_generation_envelope_grounds_visual_metadata_from_visual_knowledge_brief
     assert "Strategic content quality rules" in combined
     assert "Do not use sample headings as lazy copy" in combined
     assert "Use verified_facts and user-supplied facts as the only source" in combined
+    assert "Evidence is scaffolding, not the voice" in combined
+    assert "not like notes from a research analyst" in combined
     assert "premium 3D, 2.5D/isometric" in combined
     assert "Use hook_type to make the persuasion pattern explicit" in combined
     assert "Clean-looking OCR, specimen, or promotional template copy is not valid primary visual grounding" in combined
     assert "When visual_knowledge_brief.grounding_mode is brand_knowledge" in combined
+
+
+def test_image_led_social_envelope_requires_brand_intelligent_creative_copy() -> None:
+    service = PromptIntelligenceService()
+
+    envelope = service.compose_image_led_social_envelope(
+        user_prompt="Create a LinkedIn carousel on a new trade deal.",
+        compiled_context={
+            "brand_copy_brief": {"brand_name": "Example Brand"},
+            "brand_visual_brief": {},
+            "audience_brief": {},
+            "render_constraints": {},
+            "session_brief": {},
+            "template_fit_brief": {
+                "sequence_pack": {
+                    "surface_policy": "style_reference_only",
+                    "slides": [
+                        {
+                            "slide_index": 1,
+                            "sample_page_headline": "A small deal with a bigger signal.",
+                            "sample_page_copy": "Here is what most coverage missed.",
+                        }
+                    ],
+                }
+            },
+            "reference_asset_brief": [],
+            "objective_brief": {},
+            "prompt_intelligence_brief": {},
+            "content_format_brief": {"format": "carousel", "platform_preset": "linkedin"},
+            "research_editorial_brief": {"active": True},
+            "format_family_plan": {},
+            "content_plan": {},
+            "visual_plan": {},
+            "visual_knowledge_brief": {},
+        },
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        message_strategy={},
+    )
+
+    combined = f"{envelope.system}\n{envelope.user}"
+
+    assert "Write like a brand strategist making a premium creative" in combined
+    assert "Do not write like a research paper writer" in combined
+    assert "bibliography-like source mentions" in combined
+    assert "sample_page_headline" in combined
+
+
+def test_message_strategy_envelope_locks_style_reference_sample_story_and_non_promotional_close() -> None:
+    service = PromptIntelligenceService()
+
+    envelope = service.compose_message_strategy_envelope(
+        user_prompt="Create a LinkedIn carousel on the India-New Zealand FTA.",
+        compiled_context={
+            "brand_copy_brief": {"brand_name": "Jiraaf"},
+            "template_fit_brief": {
+                "sequence_pack": {
+                    "surface_policy": "style_reference_only",
+                    "slide_count": 4,
+                    "slides": [
+                        {"slide_index": 4, "sample_page_closing_grammar": "macro_takeaway"},
+                    ],
+                }
+            },
+            "content_format_brief": {"format": "carousel", "platform_preset": "linkedin"},
+        },
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+    )
+
+    combined = f"{envelope.system}\n{envelope.user}"
+
+    assert "Match its slide count" in combined
+    assert "final-slide grammar" in combined
+    assert "cta_intent must not become product/platform/investment promotion" in combined
+    assert "curiosity hook, specific mechanics, undercovered insight, and strategic payoff" in combined
 
 
 def test_generation_and_planning_envelopes_include_data_visualization_rules() -> None:
@@ -920,6 +996,34 @@ def test_scene_graph_repair_envelope_includes_format_family_plan() -> None:
     assert "Format family rules" in combined
     assert "Planning contract rules" in combined
     assert "\"sequence_expectation\": \"section_by_section_progression\"" in combined
+
+
+def test_scene_graph_repair_envelope_blocks_unrelated_assets_for_style_reference_carousel() -> None:
+    service = PromptIntelligenceService()
+
+    envelope = service.compose_scene_graph_repair_envelope(
+        user_prompt="Create a LinkedIn carousel on the India-New Zealand FTA.",
+        compiled_context={
+            "template_fit_brief": {
+                "sequence_pack": {
+                    "surface_policy": "style_reference_only",
+                    "slides": [{"slide_index": 1, "sample_page_headline": "A sharper opening hook"}],
+                }
+            },
+            "content_format_brief": {"format": "carousel"},
+            "prompt_intelligence_brief": {},
+        },
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        current_scene_graph={"elements": []},
+        creative_decision={"asset_strategy": {"template_surface_policy": "style_reference_only"}},
+        validation_report={"violations": ["missing_headline"]},
+    )
+
+    combined = f"{envelope.system}\n{envelope.user}"
+
+    assert "the selected sample/reference sequence is the only allowed reusable visual family" in combined
+    assert "Do not bind, mention, or copy asset names" in combined
+    assert "If the selected sample page does not visibly use a dashboard" in combined
 
 
 def test_generation_envelope_includes_native_infographic_and_static_contracts() -> None:
