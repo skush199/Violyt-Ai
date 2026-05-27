@@ -31,6 +31,36 @@ logger = logging.getLogger(__name__)
 
 
 class TemplateService:
+    TEMPLATE_MATCH_STOPWORDS = {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "for",
+        "from",
+        "in",
+        "into",
+        "is",
+        "it",
+        "its",
+        "linkedin",
+        "of",
+        "on",
+        "or",
+        "platform",
+        "post",
+        "the",
+        "this",
+        "to",
+        "with",
+        "x",
+        "jiraaf",
+    }
+
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.templates = TemplateRepository(session)
@@ -47,7 +77,11 @@ class TemplateService:
 
     @staticmethod
     def _tokenize(text: str) -> set[str]:
-        return {token for token in re.findall(r"[a-z0-9]+", text.lower()) if len(token) > 2}
+        return {
+            token
+            for token in re.findall(r"[a-z0-9]+", text.lower())
+            if len(token) > 2 and token not in TemplateService.TEMPLATE_MATCH_STOPWORDS
+        }
 
     @staticmethod
     def _export_formats_for_template(storage_path: str) -> list[str]:
@@ -355,6 +389,49 @@ class TemplateService:
             + len(guardrails.get("negative_word_bank", [])),
         }
 
+    @staticmethod
+    def _normalize_format_family(value: Any) -> str | None:
+        text = str(value or "").strip().lower()
+        if not text:
+            return None
+        if text in {"carousel", "carousal", "slides", "multi_slide", "multi-slide", "multi_page", "multi-page"}:
+            return "carousel"
+        if text in {"infographic", "multi_section", "multi-section", "explainer_board", "explainer-board"}:
+            return "infographic"
+        if text in {"static", "single", "single_panel", "single-panel", "poster", "thumbnail", "post"}:
+            return "static"
+        return None
+
+    @classmethod
+    def _derive_format_family(
+        cls,
+        *,
+        template: Template,
+        metadata: TemplateMetadata | None,
+        layout_type: str,
+        page_count: int,
+        zone_roles: set[str],
+    ) -> str:
+        explicit_candidates = [
+            template.matcher_features_json.get("format_family") if isinstance(template.matcher_features_json, dict) else None,
+            template.analysis_json.get("format_family"),
+            ((template.analysis_json.get("editorial_dna") or {}) if isinstance(template.analysis_json.get("editorial_dna"), dict) else {}).get("format_family"),
+            (metadata.zone_map.get("format_family") if metadata and isinstance(metadata.zone_map, dict) else None),
+            layout_type,
+            template.kind,
+        ]
+        for candidate in explicit_candidates:
+            normalized = cls._normalize_format_family(candidate)
+            if normalized:
+                return normalized
+        if page_count >= 3:
+            return "carousel"
+        if layout_type in {"infographic", "multi_section", "comparison"}:
+            return "infographic"
+        if len(zone_roles & {"body", "proof_point", "stat_highlight", "image"}) >= 3:
+            return "infographic"
+        return "static"
+
     @classmethod
     def _template_profile(cls, template: Template, metadata: TemplateMetadata | None) -> dict[str, Any]:
         matcher = template.matcher_features_json or {}
@@ -375,6 +452,17 @@ class TemplateService:
                 ],
             )
         )
+        title_source = " ".join(
+            filter(
+                None,
+                [
+                    template.name,
+                    template.description or "",
+                    str(template.analysis_json.get("source_filename") or ""),
+                    str(template.analysis_json.get("filename") or ""),
+                ],
+            )
+        )
         content_patterns = {
             str(pattern).strip().lower()
             for pattern in matcher.get("content_patterns", []) or []
@@ -388,8 +476,41 @@ class TemplateService:
         ).strip().lower()
         if layout_type:
             content_patterns.add(layout_type)
+        page_count = 0
+        if metadata and isinstance(getattr(metadata, "sizing_rules", None), dict):
+            for raw_count in (
+                metadata.sizing_rules.get("page_count"),
+                metadata.sizing_rules.get("slide_count"),
+            ):
+                try:
+                    parsed = int(raw_count or 0)
+                except (TypeError, ValueError):
+                    parsed = 0
+                if parsed > 0:
+                    page_count = parsed
+                    break
+        if page_count <= 0:
+            for raw_count in (
+                template.analysis_json.get("page_count"),
+                template.analysis_json.get("preflight_page_count"),
+            ):
+                try:
+                    parsed = int(raw_count or 0)
+                except (TypeError, ValueError):
+                    parsed = 0
+                if parsed > 0:
+                    page_count = parsed
+                    break
+        format_family = cls._derive_format_family(
+            template=template,
+            metadata=metadata,
+            layout_type=layout_type,
+            page_count=page_count,
+            zone_roles=zone_roles,
+        )
         return {
             "tokens": cls._tokenize(keyword_source),
+            "title_tokens": cls._tokenize(title_source),
             "ocr_tokens": cls._tokenize(
                 " ".join(
                     filter(
@@ -418,6 +539,7 @@ class TemplateService:
             "content_patterns": content_patterns,
             "brand_score": float(matcher.get("brand_score", template.analysis_json.get("brand_score", 0.0) or 0.0)),
             "editable_fields": set(metadata.editable_fields if metadata else []),
+            "page_count": page_count,
             "surface_kind": str(
                 matcher.get("surface_kind")
                 or template.analysis_json.get("surface_kind")
@@ -431,7 +553,175 @@ class TemplateService:
             "overlay_safe": bool(
                 matcher.get("overlay_safe", template.analysis_json.get("overlay_safe", True))
             ),
+            "format_family": format_family,
         }
+
+    @classmethod
+    def _requested_carousel_slide_count_from_prompt(cls, prompt: str | None) -> int | None:
+        raw = str(prompt or "")
+        match = re.search(r"\b(\d{1,2})\s*(?:-| )?slides?\b", raw, re.IGNORECASE)
+        if not match:
+            match = re.search(r"\bslides?\s*:\s*(\d{1,2})\b", raw, re.IGNORECASE)
+        if not match:
+            return None
+        try:
+            value = int(match.group(1))
+        except (TypeError, ValueError):
+            return None
+        return value if 1 < value <= 20 else None
+
+    @classmethod
+    def _adaptation_score_for_recommendation(
+        cls,
+        *,
+        requested_format_family: str | None,
+        template_profile: dict[str, Any],
+        base_score: float,
+        match_type: str,
+        score_breakdown: dict[str, float] | None = None,
+        requested_slide_count: int | None = None,
+    ) -> float:
+        adaptation_score = float(base_score)
+        candidate_family = cls._normalize_format_family(template_profile.get("format_family"))
+        if requested_format_family and candidate_family == requested_format_family:
+            adaptation_score += 8.0
+        if requested_format_family == "carousel":
+            page_count = int(template_profile.get("page_count") or 0)
+            if page_count >= 3:
+                target_count = requested_slide_count or 5
+                distance = abs(page_count - target_count)
+                adaptation_score += max(0.0, 3.0 - (distance * 0.8))
+                if distance >= 3:
+                    adaptation_score -= min(float(distance - 2) * 0.5, 1.5)
+            topical_fit = 0.0
+            if isinstance(score_breakdown, dict):
+                topical_fit = float(score_breakdown.get("keyword_overlap") or 0.0) + float(
+                    score_breakdown.get("ocr_text_fit") or 0.0
+                )
+            if topical_fit:
+                adaptation_score += min(topical_fit * 0.35, 3.0)
+            else:
+                adaptation_score -= 1.0
+        elif requested_format_family == "infographic" and bool(template_profile.get("multi_section_capable")):
+            adaptation_score += 3.0
+        elif requested_format_family == "static" and not bool(template_profile.get("multi_section_capable")):
+            adaptation_score += 1.5
+
+        if match_type == "exact_template":
+            adaptation_score += 4.0
+        elif match_type == "adapted_template":
+            adaptation_score += 2.0
+        elif match_type == "reference_only":
+            adaptation_score -= 2.0
+        return round(adaptation_score, 2)
+
+    @staticmethod
+    def _sequence_recommendation_signature(value: Any) -> tuple[str, int] | None:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        raw = raw.split("?", 1)[0]
+        stem = Path(raw).name
+        if "." in stem:
+            stem = Path(stem).stem
+        normalized = re.sub(r"[\s_]+", "-", stem.strip())
+        match = re.match(r"^(?P<family>.+?)-(?P<index>\d+)(?:-[0-9a-f]{8,})?$", normalized, flags=re.IGNORECASE)
+        if not match:
+            return None
+        try:
+            slide_index = int(match.group("index"))
+        except ValueError:
+            return None
+        if slide_index <= 0:
+            return None
+        family = re.sub(r"[-_\s]+", "-", match.group("family")).strip("-").upper()
+        return (family, slide_index) if family else None
+
+    @staticmethod
+    def _humanize_recommendation_family(value: str) -> str:
+        normalized = re.sub(r"[-_\s]+", " ", str(value or "").strip()).strip()
+        return normalized.title() if normalized else "Carousel Family"
+
+    @classmethod
+    def _collapse_carousel_recommendation_families(
+        cls,
+        recommendations: list[TemplateRecommendationResponse],
+    ) -> list[TemplateRecommendationResponse]:
+        grouped: list[TemplateRecommendationResponse] = []
+        seen_families: set[str] = set()
+        family_members: dict[str, list[TemplateRecommendationResponse]] = {}
+        for recommendation in recommendations:
+            family = str(recommendation.recommendation_group_key or "").strip()
+            if recommendation.format_family == "carousel" and family:
+                family_members.setdefault(family, []).append(recommendation)
+
+        for recommendation in recommendations:
+            family = str(recommendation.recommendation_group_key or "").strip()
+            if recommendation.format_family != "carousel" or not family:
+                grouped.append(recommendation)
+                continue
+            if family in seen_families:
+                continue
+            seen_families.add(family)
+            members = family_members.get(family, [recommendation])
+            representative = next(
+                (
+                    item
+                    for item in members
+                    if int((item.metadata or {}).get("sequence_position") or 0) == 1
+                ),
+                max(
+                    members,
+                    key=lambda item: float((item.metadata or {}).get("adaptation_score") or item.score or 0.0),
+                ),
+            )
+            family_display_name = str((representative.metadata or {}).get("family_display_name") or "").strip() or representative.display_name or representative.name
+            family_slide_count = max(
+                len(members),
+                max(
+                    int((item.metadata or {}).get("sequence_position") or 0)
+                    for item in members
+                ),
+            )
+            updated_metadata = dict(representative.metadata or {})
+            updated_metadata["family_member_count"] = len(members)
+            updated_metadata["family_slide_count"] = family_slide_count
+            updated_metadata["group_type"] = "carousel_family"
+            grouped.append(
+                representative.model_copy(
+                    update={
+                        "display_name": family_display_name,
+                        "selection_reason": representative.selection_reason or "Carousel Match",
+                        "metadata": updated_metadata,
+                    }
+                )
+            )
+        return grouped
+
+    @classmethod
+    def _annotate_recommendation_selection(
+        cls,
+        recommendations: list[TemplateRecommendationResponse],
+        *,
+        requested_format_family: str | None,
+    ) -> list[TemplateRecommendationResponse]:
+        labeled: list[TemplateRecommendationResponse] = []
+        fallback_reason = {
+            "carousel": "Carousel Match",
+            "infographic": "Infographic Match",
+            "static": "Static Match",
+        }.get(requested_format_family, "Suggested Match")
+        for index, recommendation in enumerate(recommendations):
+            selection_reason = "Best Adaptation" if index == 0 else (recommendation.selection_reason or fallback_reason)
+            labeled.append(
+                recommendation.model_copy(
+                    update={
+                        "is_primary_adaptation": index == 0,
+                        "selection_reason": selection_reason,
+                    }
+                )
+            )
+        return labeled
 
     @classmethod
     def _score_template(
@@ -467,6 +757,30 @@ class TemplateService:
             score += keyword_score
             breakdown["keyword_overlap"] = keyword_score
             reasons.append(f"keyword overlap: {', '.join(sorted(shared)[:5])}")
+        title_topic_overlap = prompt_signals["tokens"] & template_profile.get("title_tokens", set())
+        generic_title_tokens = {
+            "carousel",
+            "post",
+            "creative",
+            "template",
+            "linkedin",
+            "instagram",
+            "static",
+            "infographic",
+            "analysis",
+            "analyzer",
+            "guide",
+            "education",
+            "planning",
+            "strategy",
+            "tips",
+        }
+        specific_title_overlap = {token for token in title_topic_overlap if token not in generic_title_tokens}
+        if specific_title_overlap:
+            title_topic_score = min(3.0 + (len(specific_title_overlap) * 2.0), 8.0)
+            score += title_topic_score
+            breakdown["topic_title_fit"] = title_topic_score
+            reasons.append(f"template title/topic fit: {', '.join(sorted(specific_title_overlap)[:5])}")
         ocr_overlap = prompt_signals["tokens"] & template_profile["ocr_tokens"]
         if ocr_overlap:
             ocr_score = min(len(ocr_overlap) * 1.8, 6.0)
@@ -492,6 +806,22 @@ class TemplateService:
             score += 2.0
             breakdown["format_fit"] += 2.0
             reasons.append(f"kind matches {format_name}")
+        page_count = int(template_profile.get("page_count") or 0)
+        if format_name == "carousel":
+            if page_count >= 3:
+                carousel_score = min(4.0 + (page_count * 0.15), 5.5)
+                score += carousel_score
+                breakdown["format_fit"] += carousel_score
+                reasons.append(f"multi-page carousel support ({page_count} slides)")
+            elif template_profile["layout_type"] == "carousel":
+                score += 2.5
+                breakdown["format_fit"] += 2.5
+                reasons.append("carousel layout semantics available")
+            else:
+                adaptation_plan["multi_slide_sequence_synthesis"] = True
+                critical_misses += 2
+                breakdown["format_fit"] -= 2.5
+                reasons.append("single-page template needs carousel sequence synthesis")
         if template_profile["layout_type"] in {format_name, "carousel", "infographic"} and prompt_signals["wants_infographic"]:
             score += 2.5
             breakdown["content_structure"] += 2.5
@@ -908,9 +1238,20 @@ class TemplateService:
         recommendations: list[TemplateRecommendationResponse] = []
         # Determine if user has explicitly pinned a specific template.
         pinned_template_id: str | None = str(studio_panel.get("pinned_template_id") or "").strip() or None
+        requested_format_family = self._normalize_format_family(resolved_panel.get("format"))
 
         for template in templates:
             metadata = await self.metadata.get_by_template(template.id)
+            template_profile = self._template_profile(template, metadata)
+            matcher = template.matcher_features_json or {}
+            signature = self._sequence_recommendation_signature(template.name) or self._sequence_recommendation_signature(template.storage_path)
+            recommendation_group_key = ""
+            sequence_position = 0
+            if signature is not None:
+                recommendation_group_key = signature[0]
+                sequence_position = signature[1]
+            elif requested_format_family == "carousel" and int(template_profile.get("page_count") or 0) >= 3:
+                recommendation_group_key = re.sub(r"[-_\s]+", "-", Path(template.storage_path).stem.strip()).strip("-").upper()
             score, reasons, breakdown, adaptation_plan, critical_misses = self._score_template(
                 prompt,
                 resolved_panel,
@@ -931,10 +1272,23 @@ class TemplateService:
             if is_pinned and match_type not in {"exact_template", "adapted_template"}:
                 match_type = "exact_template"
             decision_confidence = round(min(score / 14.0, 1.0), 2)
+            adaptation_score = self._adaptation_score_for_recommendation(
+                requested_format_family=requested_format_family,
+                template_profile=template_profile,
+                base_score=score,
+                match_type=match_type,
+                score_breakdown=breakdown,
+                requested_slide_count=self._requested_carousel_slide_count_from_prompt(prompt),
+            )
             recommendations.append(
                 TemplateRecommendationResponse(
                     template_id=template.id,
                     name=template.name,
+                    display_name=(
+                        self._humanize_recommendation_family(recommendation_group_key)
+                        if requested_format_family == "carousel" and recommendation_group_key
+                        else template.name
+                    ),
                     asset_url=self.asset_delivery.build_signed_url(
                         storage_path=template.storage_path,
                         filename=Path(template.storage_path).name,
@@ -942,6 +1296,10 @@ class TemplateService:
                     score=round(score, 2),
                     match_type=match_type,
                     decision_confidence=decision_confidence,
+                    format_family=str(template_profile.get("format_family") or ""),
+                    is_primary_adaptation=False,
+                    selection_reason=None,
+                    recommendation_group_key=recommendation_group_key or None,
                     reasons=reasons,
                     score_breakdown={key: round(value, 2) for key, value in breakdown.items()},
                     adaptation_plan=adaptation_plan,
@@ -951,16 +1309,27 @@ class TemplateService:
                         "supported_platforms": metadata.platform_rules.get("supported_platforms", []) if metadata else [],
                         "supported_exports": metadata.export_rules.get("supported_formats", []) if metadata else [],
                         "editable_fields": metadata.editable_fields if metadata else [],
+                        "format_family": template_profile.get("format_family"),
+                        "adaptation_score": adaptation_score,
+                        "page_count": int(template_profile.get("page_count") or 0),
+                        "layout_type": template_profile.get("layout_type"),
+                        "sequence_family": recommendation_group_key or None,
+                        "sequence_position": sequence_position or None,
+                        "family_display_name": (
+                            self._humanize_recommendation_family(recommendation_group_key)
+                            if recommendation_group_key
+                            else template.name
+                        ),
                         "surface_kind": (
-                            template.matcher_features_json.get("surface_kind")
+                            matcher.get("surface_kind")
                             or template.analysis_json.get("surface_kind")
                         ),
                         "text_overlay_risk": (
-                            template.matcher_features_json.get("text_overlay_risk")
+                            matcher.get("text_overlay_risk")
                             or template.analysis_json.get("text_overlay_risk")
                         ),
                         "overlay_safe": bool(
-                            template.matcher_features_json.get(
+                            matcher.get(
                                 "overlay_safe",
                                 template.analysis_json.get("overlay_safe", True),
                             )
@@ -968,7 +1337,21 @@ class TemplateService:
                     },
                 )
             )
-        recommendations.sort(key=lambda item: item.score, reverse=True)
+        recommendations.sort(
+            key=lambda item: (
+                1 if self._normalize_format_family(item.metadata.get("format_family")) == requested_format_family else 0,
+                float(item.metadata.get("adaptation_score", item.score) or item.score),
+                item.score,
+                item.decision_confidence or 0.0,
+            ),
+            reverse=True,
+        )
+        if requested_format_family == "carousel":
+            recommendations = self._collapse_carousel_recommendation_families(recommendations)
+        recommendations = self._annotate_recommendation_selection(
+            recommendations,
+            requested_format_family=requested_format_family,
+        )
         logger.info(
             "template.recommend.complete brand_space_id=%s prompt_chars=%s platform=%s format=%s candidate_count=%s recommendations=%s",
             brand_space_id,
@@ -980,9 +1363,14 @@ class TemplateService:
                 {
                     "template_id": item.template_id,
                     "name": item.name,
+                    "display_name": item.display_name,
                     "score": item.score,
                     "match_type": item.match_type,
                     "decision_confidence": item.decision_confidence,
+                    "format_family": item.format_family,
+                    "is_primary_adaptation": item.is_primary_adaptation,
+                    "selection_reason": item.selection_reason,
+                    "recommendation_group_key": item.recommendation_group_key,
                     "surface_kind": item.metadata.get("surface_kind"),
                     "text_overlay_risk": item.metadata.get("text_overlay_risk"),
                     "overlay_safe": item.metadata.get("overlay_safe"),

@@ -119,3 +119,29 @@ export function getRecommendationConfidence(recommendation: TemplateRecommendati
   }
   return `${Math.round(recommendation.score * 100)} score`;
 }
+
+export function getRecommendationDisplayName(recommendation: TemplateRecommendationResponse) {
+  if (typeof recommendation.display_name === "string" && recommendation.display_name.trim()) {
+    return recommendation.display_name;
+  }
+  return recommendation.name;
+}
+
+export function getRecommendationSelectionReason(recommendation: TemplateRecommendationResponse) {
+  if (typeof recommendation.selection_reason === "string" && recommendation.selection_reason.trim()) {
+    return recommendation.selection_reason;
+  }
+  if (recommendation.is_primary_adaptation) {
+    return "Best Adaptation";
+  }
+  switch (recommendation.format_family) {
+    case "carousel":
+      return "Carousel Match";
+    case "infographic":
+      return "Infographic Match";
+    case "static":
+      return "Static Match";
+    default:
+      return "Suggested Match";
+  }
+}

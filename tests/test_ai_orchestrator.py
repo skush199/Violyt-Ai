@@ -6,11 +6,21 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from PIL import Image
 
 from app.ai.contracts import AIOrchestrationRequest, CreativeDecisionPayload, GenerationSceneGraph, MessageStrategyPayload, SceneGraphValidationReport, StructuredTextPayload
 from app.ai.orchestrator import AIOrchestratorService
+from app.core.config import get_settings
 from app.core.exceptions import GenerationFailureError, LifecycleError
 from app.services.generation_trace import GenerationTraceService
+
+
+@pytest.fixture(autouse=True)
+def _stable_test_settings_env(monkeypatch):
+    monkeypatch.setenv("DEBUG", "false")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 def test_orchestrator_normalizes_hashtag_string_to_list() -> None:
@@ -243,6 +253,42 @@ def test_orchestrator_normalize_text_payload_anchors_exact_claims_to_verified_fa
     assert payload["metadata"]["sources_used"] == ["Official release"]
 
 
+def test_orchestrator_exact_claim_markers_canonicalize_currency_variants() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel about the India-New Zealand FTA.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+    )
+
+    unsupported = AIOrchestratorService._unsupported_exact_claim_markers(
+        "The deal includes USD 20 billion over 15 years and expands trade from USD 873 million to USD 1.3 billion.",
+        request=request,
+        compiled_context={
+            "research_editorial_brief": {
+                "fact_model": {
+                    "verified_facts": [
+                        {"label": "Investment commitment", "value": "US$20 billion over 15 years"},
+                        {
+                            "label": "Bilateral merchandise trade",
+                            "value": "From US$873 million to US$1.3 billion",
+                        },
+                    ]
+                }
+            }
+        },
+    )
+
+    assert unsupported == set()
+
+
 def test_orchestrator_structures_text_payload_filters_compliance_and_boilerplate_for_render_roles() -> None:
     payload = AIOrchestratorService._structure_text_payload_for_layout(
         StructuredTextPayload(
@@ -374,6 +420,66 @@ def test_orchestrator_validate_scene_graph_flags_repeated_content_roles() -> Non
     assert any(issue.rule_id == "repeated_content_roles" for issue in report.issues)
 
 
+def test_orchestrator_validate_scene_graph_allows_soft_neutral_and_brand_tint_backgrounds() -> None:
+    service = AIOrchestratorService()
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel about the India-New Zealand FTA.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png", "size": {"width": 1080, "height": 1350}},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+    )
+    scene_graph = GenerationSceneGraph.model_validate(
+        {
+            "canvas": {"width": 1080, "height": 1350, "platform": "linkedin", "file_type": "png"},
+            "layout_mode": "adapted_template",
+            "confidence": 0.8,
+            "layers": ["content"],
+            "elements": [
+                {
+                    "element_id": "background",
+                    "element_type": "background",
+                    "role": "background",
+                    "geometry": {"x": 0, "y": 0, "width": 1, "height": 1},
+                    "style": {"fill": "#f8f9fa", "background_fill": "#415d8c"},
+                },
+                {
+                    "element_id": "headline",
+                    "element_type": "text",
+                    "role": "headline",
+                    "geometry": {"x": 0.08, "y": 0.1, "width": 0.72, "height": 0.1},
+                    "text": "India-New Zealand FTA: what changes now",
+                    "style": {"color": "#003975"},
+                },
+            ],
+            "styles": {},
+            "assets": [],
+            "template_adaptation": {},
+            "validation_hints": {},
+        }
+    )
+
+    report = service.validate_scene_graph(
+        scene_graph=scene_graph,
+        creative_decision=CreativeDecisionPayload(layout_mode="adapted_template", asset_strategy={}),
+        request=request,
+        compiled_context={
+            "brand_visual_brief": {
+                "palette_roles": {"primary": "#003975", "secondary": "#FFA400", "background": "#FFFFFF"},
+                "font_families": [],
+            }
+        },
+    )
+
+    assert not any(issue.rule_id == "color_palette_violation" for issue in report.issues)
+
+
 def test_orchestrator_logo_safe_zone_guidance_prefers_top_right_hint_and_minimum_size() -> None:
     request = AIOrchestrationRequest(
         tenant_id=uuid4(),
@@ -428,7 +534,7 @@ def test_orchestrator_logo_safe_zone_guidance_prefers_top_right_hint_and_minimum
     )
 
     assert "top-right" in guidance
-    assert "22% of the width" in guidance
+    assert "24% of the width" in guidance
 
 
 def test_orchestrator_logo_safe_zone_guidance_respects_viable_synthesized_logo_geometry() -> None:
@@ -1342,6 +1448,81 @@ def test_orchestrator_build_carousel_slide_specs_rewrites_generic_closing_visual
     assert "checkmarks" not in focus.casefold()
 
 
+def test_orchestrator_build_carousel_slide_specs_adds_continuity_metadata() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a 5-slide carousel on retirement planning mistakes with a strong opening hook and clear visual storytelling.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png", "size": {"width": 1080, "height": 1350}},
+        resolved_brand_context={},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={},
+    )
+    payload = StructuredTextPayload(
+        headline="Retirement planning mistakes",
+        body="Avoid relying only on savings. Understand inflation. Diversify wisely. Review your plan. End with a clear action step.",
+        cta="Review your retirement allocation",
+        hashtags=[],
+        metadata={
+            "carousel_slide_specs": [
+                {
+                    "role": "hook",
+                    "headline": "Are you making these retirement mistakes?",
+                    "supporting_line": "Start with the hidden risks most people miss.",
+                    "body": "Start with the hidden risks most people miss.",
+                },
+                {
+                    "role": "detail",
+                    "headline": "Relying only on savings",
+                    "supporting_line": "Inflation quietly erodes static cash.",
+                    "body": "Inflation quietly erodes static cash.",
+                    "proof_points": ["Inflation compounds over time", "Cash alone rarely keeps pace"],
+                },
+                {
+                    "role": "detail",
+                    "headline": "Diversification matters",
+                    "supporting_line": "Different bond types play different roles.",
+                    "body": "Different bond types play different roles.",
+                    "proof_points": ["Government bonds", "Corporate bonds", "Floating-rate bonds"],
+                },
+                {
+                    "role": "detail",
+                    "headline": "Why this changes outcomes",
+                    "supporting_line": "Asset mix affects long-term stability.",
+                    "body": "Asset mix affects long-term stability.",
+                },
+                {
+                    "role": "closing",
+                    "headline": "Review your plan now",
+                    "supporting_line": "Use a calmer close with a clear action step.",
+                    "body": "Use a calmer close with a clear action step.",
+                    "cta": "Review your retirement allocation",
+                },
+            ]
+        },
+    )
+
+    slides = AIOrchestratorService._build_carousel_slide_specs(payload, request=request)
+
+    first_meta = slides[0]["metadata"]
+    middle_meta = slides[2]["metadata"]
+    last_meta = slides[-1]["metadata"]
+
+    assert first_meta["sequence_position"] == "opening"
+    assert first_meta["visual_weight"] == "hero_dominant"
+    assert "static poster" in first_meta["anti_poster_rule"].casefold()
+    assert middle_meta["sequence_position"] == "middle"
+    assert middle_meta["composition_mode"] in {"guided_mechanism_modules", "multi_module_explainer", "single_focus_plus_modules"}
+    assert last_meta["sequence_position"] == "closing"
+    assert last_meta["visual_weight"] == "cta_resolved"
+    assert "review your plan now" != slides[0]["headline"].casefold()
+    assert slides[1]["transition_note"]
+    assert "next" in slides[1]["transition_note"].casefold() or "resolve" in slides[1]["transition_note"].casefold()
+
+
 def test_orchestrator_sanitizes_incompatible_visual_metadata_against_brand_grounding() -> None:
     fallback = {
         "headline": "Fallback headline",
@@ -1845,6 +2026,48 @@ def test_visual_explanation_plan_uses_data_cue_for_market_trends() -> None:
     assert plan["mode"] == "data_cue"
     assert "chart-worthy information, numeric visualization, or diagrammatic evidence" in prompt
     assert "Do not add bar-chart icons, rising-arrow symbols" in prompt
+
+
+def test_visual_explanation_plan_prefers_sample_page_adaptation_for_style_reference_only_numeric_facts() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Write a LinkedIn carousel for Jiraaf on the India-New Zealand FTA signed on 27 April 2026.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        resolved_brand_context={"brand_name": "Jiraaf", "visual_identity": {}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={"sequence_pack": {"surface_policy": "style_reference_only", "slides": []}},
+        reference_assets=[],
+        layout_decision={},
+    )
+    text_payload = StructuredTextPayload(
+        headline="The India-New Zealand FTA: A new chapter",
+        body="The agreement was signed on 27 April 2026 and includes investment and trade access commitments.",
+        cta="",
+        hashtags=[],
+        metadata={
+            "supporting_line": "Signed on 27 April 2026.",
+            "proof_points": ["US$20 billion investment over 15 years", "100% duty elimination on Indian exports"],
+            "stat_highlights": ["US$20 billion", "100% duty elimination"],
+        },
+    )
+    creative_decision = CreativeDecisionPayload(
+        layout_mode="adapted_template",
+        asset_strategy={"template_surface_policy": "style_reference_only"},
+    )
+
+    plan = AIOrchestratorService._visual_explanation_plan(
+        request,
+        text_payload,
+        creative_decision,
+        reference_images=[{"storage_path": "tenant/reference/FTA-3.pdf", "mime_type": "application/pdf"}],
+    )
+
+    assert plan["mode"] == "sample_page_adaptation"
+    assert plan["density"] == "match_sample"
 
 
 def test_visual_explanation_plan_uses_process_steps_for_tips() -> None:
@@ -2404,6 +2627,715 @@ def test_orchestrator_build_carousel_slide_specs_prefers_sequence_pack_count_ove
     assert slides[1]["body"]
 
 
+def test_orchestrator_build_carousel_slide_specs_restores_sequence_pack_reference_metadata_after_visual_focus_sanitization() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel about how disaster alerts are sequenced.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Violyt"},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={
+            "sequence_pack": {
+                "surface_policy": "style_reference_only",
+                "slide_count": 2,
+                "slides": [
+                    {
+                        "slide_index": 1,
+                        "template_id": "tpl-1",
+                        "template_name": "Alert Sequence 1",
+                        "reference_asset_path": "tenant/reference/alert-sequence-1.png",
+                    },
+                    {
+                        "slide_index": 2,
+                        "template_id": "tpl-2",
+                        "template_name": "Alert Sequence 2",
+                        "reference_asset_path": "tenant/reference/alert-sequence-2.png",
+                    },
+                ],
+            }
+        },
+        asset_catalog=[
+            {
+                "asset_id": "alert-1",
+                "asset_role": "reference_creative",
+                "storage_path": "tenant/reference/alert-sequence-1.png",
+                "mime_type": "image/png",
+                "trust_level": "trusted",
+                "metadata": {"label": "Alert sequence slide 1", "format_family": "carousel", "family_name": "alert-sequence", "reference_slide_index": 1},
+            },
+            {
+                "asset_id": "alert-2",
+                "asset_role": "reference_creative",
+                "storage_path": "tenant/reference/alert-sequence-2.png",
+                "mime_type": "image/png",
+                "trust_level": "trusted",
+                "metadata": {"label": "Alert sequence slide 2", "format_family": "carousel", "family_name": "alert-sequence", "reference_slide_index": 2},
+            },
+        ],
+        reference_assets=[
+            {
+                "asset_id": "alert-1",
+                "asset_role": "reference_creative",
+                "storage_path": "tenant/reference/alert-sequence-1.png",
+                "mime_type": "image/png",
+                "trust_level": "trusted",
+                "metadata": {"label": "Alert sequence slide 1", "format_family": "carousel", "family_name": "alert-sequence", "reference_slide_index": 1},
+            },
+            {
+                "asset_id": "alert-2",
+                "asset_role": "reference_creative",
+                "storage_path": "tenant/reference/alert-sequence-2.png",
+                "mime_type": "image/png",
+                "trust_level": "trusted",
+                "metadata": {"label": "Alert sequence slide 2", "format_family": "carousel", "family_name": "alert-sequence", "reference_slide_index": 2},
+            },
+        ],
+    )
+
+    slides = AIOrchestratorService._build_carousel_slide_specs(
+        StructuredTextPayload(
+            headline="How the alert sequence changes response timing",
+            body="The first slide frames the trigger. The second slide explains how route disruption changes the response.",
+            cta="Review the response checklist",
+            hashtags=["#Weather"],
+            metadata={
+                "carousel_slide_specs": [
+                    {
+                        "slide_number": 1,
+                        "slide_role": "hook",
+                        "headline": "First signal",
+                        "supporting_line": "The earliest trigger changes how teams prepare.",
+                        "visual_focus": {
+                            "type": "reference_image",
+                            "storage_path": "tenant/reference/unrelated.png",
+                            "description": "Formal signing ceremony visual emphasizing milestone event",
+                        },
+                    },
+                    {
+                        "slide_number": 2,
+                        "slide_role": "detail",
+                        "headline": "Response shift",
+                        "supporting_line": "The second beat clarifies the route disruption layer.",
+                        "visual_focus": {
+                            "type": "reference_image",
+                            "storage_path": "tenant/reference/unrelated-2.png",
+                            "description": "Generic process diagram",
+                        },
+                    },
+                ],
+            },
+        ),
+        request=request,
+    )
+
+    assert len(slides) == 3
+    assert slides[0]["metadata"]["reference_asset_path"] == "tenant/reference/alert-sequence-1.png"
+    assert slides[1]["metadata"]["reference_asset_path"] == "tenant/reference/alert-sequence-2.png"
+    assert slides[0]["metadata"]["reference_slide_index"] == 1
+    assert slides[1]["metadata"]["reference_slide_index"] == 2
+
+
+def test_orchestrator_build_carousel_slide_specs_prefers_explicit_prompt_count_over_style_reference_sequence_pack() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a 5-slide LinkedIn carousel on retirement planning mistakes.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={
+            "sequence_pack": {
+                "family_name": "RETIREMENT-MISTAKES",
+                "surface_policy": "style_reference_only",
+                "slide_count": 6,
+                "slides": [
+                    {"slide_index": idx, "template_id": f"tpl-{idx}", "template_name": f"Retirement Mistakes {idx}"}
+                    for idx in range(1, 7)
+                ],
+            }
+        },
+    )
+
+    slides = AIOrchestratorService._build_carousel_slide_specs(
+        StructuredTextPayload(
+            headline="Are you making these retirement planning mistakes?",
+            body=(
+                "Depending only on savings can slow retirement progress. "
+                "Ignoring inflation weakens long-term purchasing power. "
+                "Concentrated risk can hurt stability. "
+                "Poor allocation can create avoidable stress."
+            ),
+            cta="Review your retirement plan",
+            hashtags=["#RetirementPlanning"],
+            metadata={
+                "supporting_line": "Use a stronger financial framework before retirement goals drift.",
+                "proof_points": [
+                    "Don't rely only on idle savings",
+                    "Plan for inflation",
+                    "Diversify income sources",
+                    "Balance risk and stability",
+                ],
+            },
+        ),
+        request=request,
+    )
+
+    assert len(slides) == 5
+
+
+def test_orchestrator_build_carousel_slide_specs_prefers_editorial_preference_over_style_reference_sequence_pack_when_prompt_count_is_implicit() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel on how the India-New Zealand FTA affects wealth builders.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={
+            "sequence_pack": {
+                "family_name": "BEHAVIOURAL-BIASES",
+                "surface_policy": "style_reference_only",
+                "slide_count": 7,
+                "slides": [
+                    {"slide_index": idx, "template_id": f"tpl-{idx}", "template_name": f"Behavioural Biases {idx}"}
+                    for idx in range(1, 8)
+                ],
+            }
+        },
+    )
+
+    slides = AIOrchestratorService._build_carousel_slide_specs(
+        StructuredTextPayload(
+            headline="India-New Zealand FTA: What it means for steady wealth builders",
+            body=(
+                "The agreement changes tariff access, investment visibility, and cross-border opportunity. "
+                "Use a concise carousel that explains the structure and closes with a clear branded takeaway."
+            ),
+            cta="Explore curated fixed-income ideas",
+            hashtags=["#Jiraaf"],
+            metadata={
+                "preferred_slide_count": 5,
+                "supporting_line": "Keep the sequence concise and explanatory.",
+                "carousel_slide_specs": [
+                    {"headline": f"Slide {idx}", "supporting_line": f"Detail {idx}", "role": "detail"}
+                    for idx in range(1, 8)
+                ],
+            },
+        ),
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            layout_mode="adapted_template",
+            asset_strategy={"use_generated_image": True, "template_surface_policy": "style_reference_only"},
+        ),
+    )
+
+    assert len(slides) == 5
+    assert slides[-1]["slide_index"] == 5
+
+
+def test_orchestrator_build_carousel_slide_specs_does_not_expand_structured_style_reference_plan() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel on how the India-New Zealand FTA affects wealth builders.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        research_editorial_brief={"preferred_slide_count": 5},
+        template_context={
+            "sequence_pack": {
+                "family_name": "FTA-3",
+                "surface_policy": "style_reference_only",
+                "slide_count": 4,
+                "slides": [
+                    {"slide_index": idx, "template_id": f"tpl-{idx}", "template_name": f"FTA {idx}"}
+                    for idx in range(1, 5)
+                ],
+            }
+        },
+    )
+
+    slides = AIOrchestratorService._build_carousel_slide_specs(
+        StructuredTextPayload(
+            headline="India-New Zealand FTA: What it means for steady wealth builders",
+            body=(
+                "The agreement changes tariff access, investment visibility, and cross-border opportunity. "
+                "Use the approved planner structure without adding a stray instruction slide."
+            ),
+            cta="Explore curated fixed-income ideas",
+            hashtags=["#Jiraaf"],
+            metadata={
+                "preferred_slide_count": 5,
+                "carousel_slide_specs": [
+                    {
+                        "headline": f"Slide {idx}",
+                        "supporting_line": f"Real FTA story beat {idx}",
+                        "role": "takeaway" if idx == 4 else "detail",
+                    }
+                    for idx in range(1, 5)
+                ],
+            },
+        ),
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            layout_mode="adapted_template",
+            asset_strategy={"use_generated_image": True, "template_surface_policy": "style_reference_only"},
+        ),
+    )
+
+    assert len(slides) == 4
+    assert all("sample cue" not in str(slide.get("supporting_line", "")).casefold() for slide in slides)
+    assert slides[-1]["slide_index"] == 4
+
+
+def test_orchestrator_content_semantics_does_not_repair_final_cta_after_structured_count_lock() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel on how the India-New Zealand FTA affects wealth builders.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        research_editorial_brief={"preferred_slide_count": 5},
+        template_context={
+            "sequence_pack": {
+                "family_name": "FTA-3",
+                "surface_policy": "style_reference_only",
+                "slide_count": 4,
+                "slides": [{"slide_index": idx, "template_name": f"FTA {idx}"} for idx in range(1, 5)],
+            }
+        },
+    )
+    payload = StructuredTextPayload(
+        headline="India-New Zealand FTA: What it means for steady wealth builders",
+        body="A concise explainer about tariff access, investment visibility, and cross-border opportunity.",
+        cta="Explore curated fixed-income ideas",
+        hashtags=["#Jiraaf"],
+        metadata={
+            "preferred_slide_count": 5,
+            "hook_type": "contrast-led",
+            "carousel_slide_specs": [
+                {
+                    "headline": "India-New Zealand FTA: the investor context",
+                    "supporting_line": "The agreement sets up a new trade context.",
+                    "role": "hook",
+                    "visual_focus": "Premium 3D trade-document object with Jiraaf-style finance modules and clean logo-safe spacing.",
+                },
+                {
+                    "headline": "FTA terms change market-access visibility",
+                    "supporting_line": "Tariff and market-access terms changed.",
+                    "role": "structure",
+                    "body_points": ["Tariff and market-access terms define the visible agreement structure."],
+                    "proof_points": ["Tariff and market-access terms define the visible agreement structure."],
+                    "visual_focus": "2.5D modular trade map with tariff cards and restrained finance dashboard accents.",
+                },
+                {
+                    "headline": "What wealth builders should read from the FTA",
+                    "supporting_line": "The agreement affects sector visibility and investment context.",
+                    "role": "strategic_meaning",
+                    "body_points": ["Investment context is the practical reader takeaway, not a standalone investment thesis."],
+                    "proof_points": ["Investment context is the practical reader takeaway, not a standalone investment thesis."],
+                    "visual_focus": "Premium isometric portfolio dashboard showing trade signals flowing into investment-context modules.",
+                },
+                {
+                    "headline": "Use the FTA as context, not a thesis",
+                    "supporting_line": "Use the event as context, not as a standalone investment thesis.",
+                    "role": "takeaway",
+                    "cta": "Explore curated fixed-income ideas",
+                    "visual_focus": "Brand-led closing slide with product-style card stack, orange accent bar, and decisive CTA visual.",
+                },
+            ],
+        },
+    )
+
+    report = AIOrchestratorService._validate_content_semantics(
+        request=request,
+        text_payload=payload,
+        creative_decision=CreativeDecisionPayload(asset_strategy={"template_surface_policy": "style_reference_only"}),
+    )
+
+    assert report["status"] == "clean"
+
+
+def test_orchestrator_content_semantic_validator_flags_generic_headline_unsupported_claim_and_weak_visual_focus() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel about the India-New Zealand FTA signed on 27 April 2026.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        research_editorial_brief={
+            "fact_model": {
+                "verified_facts": [
+                    {"value": "27 April 2026", "detail": "The user-supplied signing date."},
+                ]
+            }
+        },
+    )
+    payload = StructuredTextPayload(
+        headline="India-New Zealand FTA: Why this matters now",
+        body="The agreement creates a USD 99 billion opportunity.",
+        cta="Read more",
+        hashtags=["#FTA"],
+        metadata={
+            "hook_type": "contrast-led",
+            "claim_evidence_pairs": [
+                {"claim": "The agreement was signed on 27 April 2026", "evidence": "User-supplied fact."}
+            ],
+            "carousel_slide_specs": [
+                {
+                    "headline": "Why this matters now",
+                    "supporting_line": "The agreement creates a USD 99 billion opportunity.",
+                    "body": "This is a major deal.",
+                    "role": "hook",
+                    "visual_focus": "Generic professional photo with a handshake.",
+                    "cta": "",
+                },
+                {
+                    "headline": "What actually changed",
+                    "supporting_line": "Tariff access changed.",
+                    "body": "Exact tariff impact is not verified here.",
+                    "role": "structure",
+                    "proof_points": ["The signing date is 27 April 2026."],
+                    "visual_focus": "Clean graphic visual highlighting the topic.",
+                    "cta": "",
+                },
+                {
+                    "headline": "Use the FTA as context, not a thesis",
+                    "supporting_line": "Read the deal as context for future sector visibility.",
+                    "body": "The final takeaway is strategic context.",
+                    "role": "takeaway",
+                    "visual_focus": "Brand-led closing card with investment-context dashboard modules.",
+                    "cta": "Explore curated fixed-income ideas",
+                },
+            ],
+        },
+    )
+
+    report = AIOrchestratorService._validate_content_semantics(request=request, text_payload=payload)
+
+    issue_codes = {issue["code"] for issue in report["issues"]}
+    assert report["status"] == "needs_rewrite"
+    assert "carousel_raw_generic_sample_headline" in issue_codes
+    assert "carousel_slide_unsupported_exact_claim" in issue_codes
+    assert "carousel_weak_visual_focus" in issue_codes
+
+
+def test_orchestrator_content_semantic_validator_flags_raw_reference_visual_focus_and_first_slide_sample_heading() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel about the India-New Zealand FTA signed on 27 April 2026.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        research_editorial_brief={
+            "fact_model": {
+                "verified_facts": [
+                    {"value": "27 April 2026", "detail": "The user-supplied signing date."},
+                    {"value": "India-New Zealand FTA", "detail": "The user-supplied topic."},
+                ]
+            }
+        },
+    )
+    payload = StructuredTextPayload(
+        headline="India-New Zealand FTA",
+        body="A four-slide explainer.",
+        cta="Read more",
+        hashtags=["#FTA"],
+        metadata={
+            "hook_type": "contrast-led",
+            "claim_evidence_pairs": [
+                {"claim": "The agreement was signed on 27 April 2026", "evidence": "User-supplied fact."}
+            ],
+            "carousel_slide_specs": [
+                {
+                    "headline": "Why this matters now",
+                    "supporting_line": "The agreement changes how the trade story should be read.",
+                    "body": "The agreement changes how the trade story should be read.",
+                    "role": "hook",
+                    "proof_points": ["The agreement was signed on 27 April 2026."],
+                    "visual_focus": {
+                        "type": "reference_image",
+                        "storage_path": "tenant/reference/Bond-Strategy-barbell-bullet-or-ladder.pdf",
+                    },
+                    "cta": "",
+                },
+                {
+                    "headline": "What actually changed",
+                    "supporting_line": "Market access and implementation are the key reader questions.",
+                    "body": "Market access and implementation are the key reader questions.",
+                    "role": "structure",
+                    "proof_points": ["Market access and implementation are the key reader questions."],
+                    "visual_focus": "tenant/reference/Floating-Rate-Bonds-5.png",
+                    "cta": "",
+                },
+                {
+                    "headline": "Why the FTA matters beyond tariffs",
+                    "supporting_line": "The deal is a strategic signal, not only a tariff update.",
+                    "body": "The deal is a strategic signal, not only a tariff update.",
+                    "role": "strategic_meaning",
+                    "proof_points": ["The deal is a strategic signal, not only a tariff update."],
+                    "visual_focus": "Premium 2.5D trade-and-investment modules with evidence cards.",
+                    "cta": "",
+                },
+                {
+                    "headline": "What investors should watch next",
+                    "supporting_line": "Implementation is the next signal to track.",
+                    "body": "Implementation is the next signal to track.",
+                    "role": "closing",
+                    "proof_points": ["Implementation is the next signal to track."],
+                    "visual_focus": "Brand-led closing card with trade route and fixed-income context modules.",
+                    "cta": "Read the full breakdown",
+                },
+            ],
+        },
+    )
+
+    report = AIOrchestratorService._validate_content_semantics(request=request, text_payload=payload)
+    issue_codes = {issue["code"] for issue in report["issues"]}
+
+    assert report["status"] == "needs_rewrite"
+    assert "carousel_raw_generic_headline" in issue_codes
+    assert "carousel_raw_generic_sample_headline" in issue_codes
+    assert "carousel_raw_reference_visual_focus" in issue_codes
+    assert "carousel_reference_visual_focus" in issue_codes
+
+
+def test_orchestrator_build_carousel_slide_specs_filters_sample_instruction_copy_from_outline() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel on the India-New Zealand FTA.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        content_plan={
+            "story_outline": [
+                {
+                    "title": "Why this matters now",
+                    "description": "Open with a strong hook or tension point inspired by the sample cue: cover hook.",
+                    "role": "hook",
+                },
+                {
+                    "title": "What actually changed",
+                    "description": "Explain tariff access and investment visibility.",
+                    "role": "detail",
+                },
+                {
+                    "title": "Why investors should care",
+                    "description": "Translate the agreement into fixed-income context.",
+                    "role": "detail",
+                },
+                {
+                    "title": "What to watch next",
+                    "description": "Close with a useful decision lens.",
+                    "role": "takeaway",
+                },
+            ],
+            "preferred_slide_count": 4,
+        },
+        template_context={"sequence_pack": {"surface_policy": "style_reference_only", "slide_count": 4, "slides": []}},
+    )
+
+    slides = AIOrchestratorService._build_carousel_slide_specs(
+        StructuredTextPayload(
+            headline="India-New Zealand FTA: the investor angle",
+            body="Tariff access, investment commitments, and sector movement can shape fixed-income context for investors.",
+            cta="Explore curated fixed-income ideas",
+            hashtags=["#Jiraaf"],
+            metadata={"preferred_slide_count": 4},
+        ),
+        request=request,
+        creative_decision=CreativeDecisionPayload(asset_strategy={"template_surface_policy": "style_reference_only"}),
+    )
+
+    rendered_copy = " ".join(
+        str(slide.get(key) or "")
+        for slide in slides
+        for key in ("headline", "supporting_line", "body")
+    ).casefold()
+    assert "sample cue" not in rendered_copy
+    assert "open with a strong hook" not in rendered_copy
+
+
+def test_orchestrator_build_carousel_slide_specs_uses_request_surface_policy_when_decision_omits_flag() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Write a LinkedIn carousel for Jiraaf on the India-New Zealand FTA.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={
+            "sequence_pack": {
+                "family_name": "INDIA-NEW-ZEALAND",
+                "surface_policy": "style_reference_only",
+                "slide_count": 7,
+                "slides": [
+                    {
+                        "slide_index": idx,
+                        "template_name": f"India New Zealand {idx}",
+                        "reference_asset_path": f"tenant/reference/INDIA-NEW-ZEALAND-{idx}.png",
+                    }
+                    for idx in range(1, 8)
+                ],
+            }
+        },
+    )
+
+    slides = AIOrchestratorService._build_carousel_slide_specs(
+        StructuredTextPayload(
+            headline="India-New Zealand FTA: the investor angle",
+            body="A five-part explainer should cover the hook, structure, sectors, undercovered angle, and closing takeaway.",
+            cta="Explore curated fixed-income ideas",
+            hashtags=["#Jiraaf"],
+            metadata={
+                "carousel_slide_specs": [
+                    {"headline": f"Slide {idx}", "supporting_line": f"Detail {idx}", "role": "detail"}
+                    for idx in range(1, 6)
+                ],
+            },
+        ),
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            layout_mode="adapted_template",
+            asset_strategy={"use_generated_image": True},
+        ),
+    )
+
+    assert len(slides) == 5
+    assert slides[-1]["slide_index"] == 5
+    assert slides[-1]["metadata"]["reference_slide_count"] == 7
+    assert slides[-1]["metadata"]["reference_asset_path"] == "tenant/reference/INDIA-NEW-ZEALAND-7.png"
+
+
+def test_template_sequence_pack_keeps_selected_style_reference_even_when_not_topical() -> None:
+    selected_template_id = "f3649ec9-d288-4164-a8fc-68379add485b"
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Write a LinkedIn carousel for Jiraaf on the India-New Zealand FTA.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        resolved_brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        layout_decision={
+            "template_id": selected_template_id,
+            "template_name": "Bond Analyzer",
+            "asset_strategy": {"template_surface_policy": "style_reference_only"},
+        },
+        template_context={
+            "sequence_pack": {
+                "family_name": "BOND-ANALYZER",
+                "selected_template_id": selected_template_id,
+                "selected_template_name": "Bond Analyzer",
+                "surface_policy": "style_reference_only",
+                "slide_count": 5,
+                "slides": [
+                    {"slide_index": idx, "template_name": f"Bond Analyzer {idx}"}
+                    for idx in range(1, 6)
+                ],
+            }
+        },
+    )
+
+    sequence_pack = AIOrchestratorService._template_sequence_pack(request)
+
+    assert sequence_pack is not None
+    assert sequence_pack["selected_template_name"] == "Bond Analyzer"
+
+
+def test_orchestrator_build_carousel_slide_specs_ignores_irrelevant_style_reference_sequence_pack() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a 5-slide LinkedIn carousel on retirement planning mistakes.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={
+            "sequence_pack": {
+                "family_name": "FLOATING-RATE-BONDS",
+                "surface_policy": "style_reference_only",
+                "slide_count": 6,
+                "slides": [
+                    {"slide_index": idx, "template_id": f"tpl-{idx}", "template_name": f"Floating-Rate-Bonds-{idx}"}
+                    for idx in range(1, 7)
+                ],
+            }
+        },
+    )
+
+    slides = AIOrchestratorService._build_carousel_slide_specs(
+        StructuredTextPayload(
+            headline="Are you making these retirement planning mistakes?",
+            body="Use strong retirement framing instead of unrelated bond-product sequencing.",
+            cta="Review your retirement plan",
+            hashtags=["#RetirementPlanning"],
+            metadata={"supporting_line": "Keep the story about retirement, not bond product explainers."},
+        ),
+        request=request,
+    )
+
+    assert len(slides) == 5
+    assert all("reference_template_name" not in (slide.get("metadata") or {}) for slide in slides)
+
+
 def test_orchestrator_build_carousel_slide_specs_uses_sequence_pack_story_roles_as_outline_source() -> None:
     request = AIOrchestrationRequest(
         tenant_id=uuid4(),
@@ -2747,7 +3679,7 @@ def test_orchestrator_build_carousel_slide_specs_semantic_validator_restores_mis
     assert slides[1]["headline"] == "What is actually in the deal"
     assert slides[2]["headline"] == "What most coverage missed"
     assert slides[3]["headline"] == "Why this matters strategically"
-    assert slides[4]["headline"] == "Read the full breakdown"
+    assert slides[4]["headline"] == "What to watch next"
     assert all(slide["cta"] == "" for slide in slides[:-1])
     assert slides[-1]["cta"] == "Read the full breakdown"
 
@@ -2797,12 +3729,12 @@ def test_orchestrator_build_carousel_slide_render_prompt_uses_story_role_body_an
 
     assert "Story role: undercovered_angle." in prompt
     assert "This slide should surface what most coverage missed, overlooked, or simplified." in prompt
-    assert "FINAL TEXT RENDER CONTRACT" in prompt
+    assert "TEXT OVERLAY CONTRACT" in prompt
     assert "layout discipline: use an advanced explanatory slide composition" in prompt.lower()
-    assert "The agreement's speed signaled political and strategic urgency" in prompt
+    assert "body zone requires a calm paragraph or callout surface" in prompt
     assert "Do not add a CTA button or footer treatment on this slide." in prompt
-    assert "exact words are intentionally withheld" not in prompt
-    assert "do not render any readable words" not in prompt.lower()
+    assert "exact words intentionally withheld" in prompt
+    assert "do not render any readable words" in prompt.lower()
 
 
 def test_orchestrator_build_carousel_slide_render_prompt_includes_legal_footer_when_present() -> None:
@@ -2856,8 +3788,8 @@ def test_orchestrator_build_carousel_slide_render_prompt_includes_legal_footer_w
         },
     )
 
-    assert "Reserve a thin quiet bottom footer-safe zone" in prompt
-    assert "Do not render, invent, paraphrase, or approximate legal footer text" in prompt
+    assert "legal copy, and logo after image generation" in prompt
+    assert "Do not render any readable words" in prompt
     assert "Read all offer documents carefully." not in prompt
     assert "Do not invent a legal footer" not in prompt
     assert "Do not add a CTA button on this slide; preserve only a thin quiet legal-footer-safe strip at the bottom." in prompt
@@ -3029,6 +3961,1070 @@ def test_orchestrator_build_carousel_slide_render_prompt_includes_palette_execut
     assert "Use #FFA400 selectively for small stat moments, highlight chips, one hero object accent, the CTA treatment" in prompt
 
 
+def test_orchestrator_build_carousel_slide_render_prompt_hard_locks_reference_zone_map_layout() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel about the India-New Zealand FTA.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf", "visual_identity": {"brand_color_palette": {"primary": "#003975"}}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        reference_assets=[],
+        asset_catalog=[],
+        resolution_policy={},
+    )
+    creative_decision = CreativeDecisionPayload(
+        layout_mode="adapted_template",
+        asset_strategy={"template_surface_policy": "style_reference_only", "use_generated_image": True},
+    )
+    scene_graph = GenerationSceneGraph.model_validate(
+        {
+            "canvas": {"width": 1080, "height": 1350, "platform": "linkedin", "file_type": "png"},
+            "layout_mode": "adapted_template",
+            "confidence": 0.82,
+            "layers": ["background", "content"],
+            "elements": [
+                {"element_id": "background", "element_type": "rectangle", "role": "background", "geometry": {"x": 0, "y": 0, "width": 1, "height": 1}},
+                {"element_id": "headline", "element_type": "text", "role": "headline", "geometry": {"x": 0.06, "y": 0.08, "width": 0.36, "height": 0.12}},
+                {"element_id": "hero_visual", "element_type": "image", "role": "hero_visual", "geometry": {"x": 0.54, "y": 0.14, "width": 0.3, "height": 0.34}},
+                {"element_id": "body", "element_type": "text", "role": "body", "geometry": {"x": 0.06, "y": 0.28, "width": 0.34, "height": 0.16}},
+                {"element_id": "cta", "element_type": "text", "role": "cta", "geometry": {"x": 0.06, "y": 0.82, "width": 0.24, "height": 0.08}},
+            ],
+            "styles": {"layout_archetype": "editorial_split"},
+        }
+    )
+    slide = {
+        "slide_index": 1,
+        "slide_count": 7,
+        "role": "hook",
+        "headline": "India-New Zealand FTA explained",
+        "supporting_line": "A clean opening hook.",
+        "proof_points": [],
+        "cta": "",
+        "metadata": {
+            "story_role": "hook",
+            "reference_zone_map": {
+                "layout_type": "editorial_split",
+                "zones": [
+                    {"role": "headline", "x": 0.06, "y": 0.08, "w": 0.36, "h": 0.12},
+                    {"role": "hero_visual", "x": 0.54, "y": 0.14, "w": 0.3, "h": 0.34},
+                    {"role": "body", "x": 0.06, "y": 0.28, "w": 0.34, "h": 0.16},
+                    {"role": "cta", "x": 0.06, "y": 0.82, "w": 0.24, "h": 0.08},
+                ],
+            },
+        },
+    }
+
+    prompt = AIOrchestratorService.build_carousel_slide_render_prompt(
+        request=request,
+        creative_decision=creative_decision,
+        message_strategy=None,
+        scene_graph=scene_graph,
+        slide=slide,
+        compiled_context={},
+    )
+
+    assert "Hard per-slide layout lock:" in prompt
+    assert "Exact per-slide geometry manifest" in prompt
+    assert "Reproduce this slide's layout archetype and spacing rhythm strictly" in prompt
+
+
+def test_build_carousel_slide_render_prompt_includes_strict_sample_layout_contract() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Write a LinkedIn carousel for Jiraaf on the India-New Zealand FTA.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={
+            "brand_name": "Jiraaf",
+            "visual_identity": {"brand_color_palette": {"primary": "#003975", "accent": "#FFA400"}},
+        },
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={
+            "sequence_pack": {
+                "family_name": "FTA (3)",
+                "surface_policy": "style_reference_only",
+                "slide_count": 4,
+                "slides": [
+                    {
+                        "slide_index": 1,
+                        "story_role": "hook",
+                        "headline_hint": "Why this matters now",
+                        "zone_map": {
+                            "layout_type": "marketing_social",
+                            "zones": [
+                                {"role": "headline", "x": 0.05, "y": 0.01, "w": 0.7, "h": 0.12},
+                                {"role": "logo", "x": 0.79, "y": 0.036, "w": 0.18, "h": 0.09},
+                                {"role": "image", "x": 0.11, "y": 0.2, "w": 0.14, "h": 0.14},
+                                {"role": "image", "x": 0.43, "y": 0.2, "w": 0.14, "h": 0.14},
+                                {"role": "body", "x": 0.11, "y": 0.42, "w": 0.14, "h": 0.12},
+                            ],
+                            "spacing": {"x_padding": 0.03, "y_padding": 0.04},
+                        },
+                        "composition_logic": {"balance": "centered", "framing": "top_header_body", "layering": "single_plane", "focal_path": ["headline", "body", "image", "cta", "logo"]},
+                        "visual_craft": {"depth_style": "flat", "rendering_style": "mixed", "lighting": "soft", "polish_level": "clean", "material_cues": ["glass", "paper"], "dimensionality_cues": ["shadow"]},
+                        "subject_semantics": {"scene_type": "trade agreement explainer", "primary_subjects": ["india new zealand fta", "tariff access"], "financial_objects": ["trade corridors"], "abstraction_level": "conceptual"},
+                        "editorial_dna": {"copy_density": "high", "closing_style": "reflective_close", "proof_module_count": 1, "headline_patterns": ["India New Zealand FTA"]},
+                    }
+                ],
+            }
+        },
+    )
+    slide = {
+        "slide_index": 1,
+        "slide_count": 4,
+        "role": "hook",
+        "headline": "Why this matters now",
+        "supporting_line": "The India-New Zealand FTA changes more than tariffs.",
+        "proof_points": [],
+        "cta": "",
+        "metadata": {
+            "story_role": "hook",
+            "reference_slide_index": 1,
+            "reference_slide_count": 4,
+            "reference_template_name": "FTA (3)",
+            "reference_zone_map": {
+                "layout_type": "marketing_social",
+                "zones": [
+                    {"role": "headline", "x": 0.05, "y": 0.01, "w": 0.7, "h": 0.12},
+                    {"role": "logo", "x": 0.79, "y": 0.036, "w": 0.18, "h": 0.09},
+                    {"role": "image", "x": 0.11, "y": 0.2, "w": 0.14, "h": 0.14},
+                    {"role": "image", "x": 0.43, "y": 0.2, "w": 0.14, "h": 0.14},
+                    {"role": "body", "x": 0.11, "y": 0.42, "w": 0.14, "h": 0.12},
+                ],
+                "spacing": {"x_padding": 0.03, "y_padding": 0.04},
+            },
+            "reference_composition_logic": {"balance": "centered", "framing": "top_header_body", "layering": "single_plane", "focal_path": ["headline", "body", "image", "cta", "logo"]},
+            "reference_visual_craft": {"depth_style": "flat", "rendering_style": "mixed", "lighting": "soft", "polish_level": "clean", "material_cues": ["glass", "paper"], "dimensionality_cues": ["shadow"]},
+            "reference_subject_semantics": {"scene_type": "trade agreement explainer", "primary_subjects": ["india new zealand fta", "tariff access"], "financial_objects": ["trade corridors"], "abstraction_level": "conceptual"},
+            "reference_editorial_dna": {"copy_density": "high", "closing_style": "reflective_close", "proof_module_count": 1, "headline_patterns": ["India New Zealand FTA"]},
+        },
+    }
+    scene_graph = GenerationSceneGraph.model_validate(
+        {
+            "canvas": {"width": 1080, "height": 1350, "platform": "linkedin", "file_type": "png"},
+            "elements": [],
+        }
+    )
+
+    prompt = AIOrchestratorService.build_carousel_slide_render_prompt(
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            layout_mode="adapted_template",
+            asset_strategy={"template_surface_policy": "style_reference_only"},
+        ),
+        message_strategy=None,
+        slide=slide,
+        scene_graph=scene_graph,
+        compiled_context={},
+    )
+
+    assert "STRICT SAMPLE LAYOUT CONTRACT JSON" in prompt
+    assert '"image_zone_count":2' in prompt
+    assert '"text_zone_count":2' in prompt
+    assert '"copy_density":"high"' in prompt
+    assert '"proof_module_count":1' in prompt
+    assert '"rendering_style":"mixed"' in prompt
+    assert '"financial_objects":["trade corridors"]' in prompt
+    assert '"closing_style":"reflective_close"' in prompt
+    assert "match the sample's zone counts, image count, text density, section partitions, spacing geometry, image style, color discipline, and closing grammar" in prompt
+
+
+def test_build_carousel_slide_render_prompt_ignores_contaminated_sample_metadata_for_style_reference_only() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Write a LinkedIn carousel for Jiraaf on the India-New Zealand FTA signed on 27 April 2026.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={
+            "brand_name": "Jiraaf",
+            "visual_identity": {"brand_color_palette": {"primary": "#003975", "accent": "#FFA400"}},
+        },
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={
+            "sequence_pack": {
+                "family_name": "FTA (3)",
+                "surface_policy": "style_reference_only",
+                "slide_count": 4,
+                "slides": [{"slide_index": 1, "story_role": "hook"}],
+            }
+        },
+    )
+    slide = {
+        "slide_index": 1,
+        "slide_count": 4,
+        "role": "hook",
+        "headline": "The India-New Zealand FTA: A new chapter",
+        "supporting_line": "Signed on 27 April 2026.",
+        "proof_points": ["FTA signing date: 27 April 2026"],
+        "cta": "",
+        "metadata": {
+            "story_role": "hook",
+            "reference_template_name": "FTA (3)",
+            "reference_layout_asset_path": "tenant/reference/FTA-3.pdf",
+            "reference_slide_index": 1,
+            "reference_slide_count": 4,
+            "reference_zone_map": {
+                "layout_type": "marketing_social",
+                "zones": [
+                    {"role": "headline", "x": 0.05, "y": 0.01, "w": 0.7, "h": 0.12},
+                    {"role": "image", "x": 0.11, "y": 0.2, "w": 0.14, "h": 0.14},
+                    {"role": "body", "x": 0.11, "y": 0.42, "w": 0.14, "h": 0.12},
+                ],
+            },
+            "reference_subject_semantics": {
+                "scene_type": "financial data illustration",
+                "primary_subjects": ["bond market", "graphs", "data analysis tools"],
+                "financial_objects": ["yield curves", "government spreads"],
+            },
+            "reference_editorial_dna": {
+                "copy_density": "high",
+                "headline_patterns": ["Bond Market", "See the bond market the way professionals do"],
+            },
+        },
+    }
+
+    prompt = AIOrchestratorService.build_carousel_slide_render_prompt(
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            layout_mode="adapted_template",
+            asset_strategy={"template_surface_policy": "style_reference_only"},
+        ),
+        message_strategy=None,
+        slide=slide,
+        scene_graph=GenerationSceneGraph.model_validate(
+            {"canvas": {"width": 1080, "height": 1350, "platform": "linkedin"}, "elements": []}
+        ),
+        reference_images=[
+            {
+                "asset_id": "fta-sample",
+                "asset_role": "reference_creative",
+                "storage_path": "tenant/reference/FTA-3.pdf",
+                "mime_type": "application/pdf",
+                "metadata": {"label": "FTA (3)", "format_family": "carousel"},
+            }
+        ],
+        compiled_context={},
+    )
+
+    assert "ignored_stale_or_cross_sample_dna" in prompt
+    assert "Selected sample metadata guard" in prompt
+    assert "Bond Market" not in prompt
+    assert "yield curves" not in prompt
+    assert "Reference-zone geometry contract JSON" not in prompt
+    assert "selected sample page image itself as authority" in prompt
+
+
+def test_build_carousel_slide_render_prompt_uses_sample_page_blueprint_instead_of_generic_scene_graph() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel about a new trade agreement.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Example", "visual_identity": {}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={
+            "sequence_pack": {
+                "family_name": "Client sample",
+                "surface_policy": "style_reference_only",
+                "slide_count": 4,
+                "slides": [{"slide_index": 2, "story_role": "structure"}],
+            }
+        },
+    )
+    slide = {
+        "slide_index": 2,
+        "slide_count": 4,
+        "role": "structure",
+        "headline": "What changed",
+        "supporting_line": "A concise structure slide.",
+        "proof_points": ["One approved proof point"],
+        "metadata": {
+            "story_role": "structure",
+            "reference_template_name": "Client sample",
+            "reference_layout_asset_path": "tenant/reference/client-sample.pdf",
+            "reference_slide_index": 2,
+            "reference_slide_count": 4,
+            "sample_page_blueprint": {
+                "layout_category": "numbered_or_icon_row_list",
+                "density": "dense",
+                "zones": [
+                    {"role": "row_module_1", "x": 0.04, "y": 0.25, "w": 0.92, "h": 0.06},
+                    {"role": "row_module_2", "x": 0.04, "y": 0.34, "w": 0.92, "h": 0.06},
+                ],
+                "module_counts": {"horizontal_band_count": 7, "card_like_count": 0, "large_visual_count": 0},
+                "visual_permissions": {"table_allowed": True, "chart_or_graph_allowed": False},
+                "must_match": ["layout_category:numbered_or_icon_row_list", "horizontal_band_count:7"],
+            },
+        },
+    }
+    scene_graph = GenerationSceneGraph.model_validate(
+        {
+            "canvas": {"width": 1080, "height": 1350, "platform": "linkedin"},
+            "elements": [
+                {
+                    "element_id": "generic_dashboard",
+                    "element_type": "image",
+                    "role": "dashboard",
+                    "geometry": {"x": 0.1, "y": 0.55, "width": 0.8, "height": 0.3, "units": "normalized"},
+                    "visible": True,
+                }
+            ],
+        }
+    )
+
+    prompt = AIOrchestratorService.build_carousel_slide_render_prompt(
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            layout_mode="adapted_template",
+            asset_strategy={"template_surface_policy": "style_reference_only"},
+        ),
+        message_strategy=None,
+        slide=slide,
+        scene_graph=scene_graph,
+        reference_images=[
+            {
+                "asset_id": "sample",
+                "asset_role": "reference_creative",
+                "storage_path": "tenant/reference/client-sample.pdf",
+                "mime_type": "application/pdf",
+                "metadata": {"label": "Client sample", "format_family": "carousel"},
+            }
+        ],
+        compiled_context={},
+    )
+
+    assert "rendered_selected_sample_page" in prompt
+    assert "numbered_or_icon_row_list" in prompt
+    assert "horizontal_band_count" in prompt
+    assert "generic_dashboard" not in prompt
+    assert "Scene-graph geometry contract JSON" not in prompt
+
+
+def test_build_carousel_slide_render_prompt_card_grid_uses_horizontal_fallback_count() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel about investor behavior.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Example", "visual_identity": {}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={"sequence_pack": {"surface_policy": "style_reference_only"}},
+    )
+    slide = {
+        "slide_index": 3,
+        "slide_count": 4,
+        "role": "body",
+        "headline": "Three habits to check",
+        "supporting_line": "Keep the sample callout structure.",
+        "proof_points": ["Check risk", "Review tenure", "Compare liquidity", "Read documents"],
+        "metadata": {
+            "story_role": "educational_point",
+            "reference_template_name": "Different client sample",
+            "reference_layout_asset_path": "tenant/reference/different-sample.pdf",
+            "sample_page_blueprint": {
+                "layout_category": "editorial_explainer",
+                "density": "balanced",
+                "zones": [
+                    {"role": "row_module_1", "x": 0.04, "y": 0.29, "w": 0.92, "h": 0.12},
+                    {"role": "row_module_2", "x": 0.04, "y": 0.43, "w": 0.92, "h": 0.12},
+                    {"role": "row_module_3", "x": 0.04, "y": 0.57, "w": 0.92, "h": 0.12},
+                    {"role": "row_module_4", "x": 0.04, "y": 0.71, "w": 0.92, "h": 0.12},
+                ],
+                "module_counts": {
+                    "horizontal_band_count": 7,
+                    "card_like_count": 0,
+                    "small_icon_like_count": 4,
+                },
+                "visual_permissions": {"chart_or_graph_allowed": False, "dashboard_allowed": False},
+            },
+        },
+    }
+
+    prompt = AIOrchestratorService.build_carousel_slide_render_prompt(
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            layout_mode="adapted_template",
+            asset_strategy={"template_surface_policy": "style_reference_only"},
+        ),
+        message_strategy=None,
+        slide=slide,
+        scene_graph=GenerationSceneGraph.model_validate(
+            {"canvas": {"width": 1080, "height": 1350, "platform": "linkedin"}, "elements": []}
+        ),
+        reference_images=[{"storage_path": "tenant/reference/different-sample.pdf"}],
+        compiled_context={"template_fit_brief": {"template_name": "Different client sample"}},
+    )
+
+    assert "SELECTED SAMPLE PAGE PRIMARY RENDER CONTRACT" in prompt
+    assert "This slide needs 4 proof/callout module(s)" in prompt
+    assert '"Read documents"' in prompt
+
+
+def test_sample_output_similarity_flags_sample_drift_with_exact_corrections() -> None:
+    sample_blueprint = {
+        "layout_category": "numbered_or_icon_row_list",
+        "density": "dense",
+        "module_counts": {
+            "horizontal_band_count": 7,
+            "card_like_count": 0,
+            "large_visual_count": 1,
+            "small_icon_like_count": 10,
+            "top_text_band_count": 2,
+            "footer_band_count": 1,
+            "cta_count": 0,
+        },
+        "visual_permissions": {
+            "dashboard_allowed": False,
+            "cta_allowed": False,
+            "table_allowed": True,
+        },
+    }
+    output_blueprint = {
+        "layout_category": "closing_cta_or_product_surface",
+        "density": "balanced",
+        "module_counts": {
+            "horizontal_band_count": 1,
+            "card_like_count": 2,
+            "large_visual_count": 1,
+            "small_icon_like_count": 3,
+            "top_text_band_count": 4,
+            "footer_band_count": 4,
+            "cta_count": 1,
+        },
+        "visual_permissions": {
+            "dashboard_allowed": True,
+            "cta_allowed": True,
+            "table_allowed": False,
+        },
+    }
+
+    report = AIOrchestratorService._sample_output_similarity_report(
+        sample_blueprint=sample_blueprint,
+        output_blueprint=output_blueprint,
+    )
+
+    assert report["retry_recommended"] is True
+    assert report["score"] < 0.82
+    assert "layout_category_drift" in report["issues"]
+    assert "horizontal_band_count_drift" in report["issues"]
+    assert "cta_grammar_invented" in report["issues"]
+    assert any("Sample has about 7 row/list bands" in item for item in report["corrections"])
+
+
+def test_sample_output_similarity_uses_vision_ocr_and_premium_quality_signals() -> None:
+    sample_blueprint = {
+        "layout_category": "card_callout_grid",
+        "density": "balanced",
+        "module_counts": {"card_like_count": 3, "horizontal_band_count": 0},
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": False, "table_allowed": False},
+        "ocr_structure": {"readable_text_blocks": 5, "text_overlap_or_collision_risk": "none"},
+        "premium_quality": {
+            "overall_score": 0.9,
+            "typography_score": 0.88,
+            "spacing_score": 0.86,
+            "craft_score": 0.92,
+            "brand_finish_score": 0.9,
+        },
+        "visual_craft_dna": {"depth_style": "true_3d", "rendering_style": "3d_render", "lighting": "studio"},
+    }
+    output_blueprint = {
+        "layout_category": "card_callout_grid",
+        "density": "balanced",
+        "module_counts": {"card_like_count": 3, "horizontal_band_count": 0},
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": False, "table_allowed": False},
+        "ocr_structure": {"readable_text_blocks": 10, "text_overlap_or_collision_risk": "high"},
+        "premium_quality": {
+            "overall_score": 0.58,
+            "typography_score": 0.52,
+            "spacing_score": 0.5,
+            "craft_score": 0.54,
+            "brand_finish_score": 0.56,
+        },
+        "visual_craft_dna": {"depth_style": "flat", "rendering_style": "vector", "lighting": "flat"},
+    }
+
+    report = AIOrchestratorService._sample_output_similarity_report(
+        sample_blueprint=sample_blueprint,
+        output_blueprint=output_blueprint,
+    )
+
+    assert report["retry_recommended"] is True
+    assert "ocr_text_block_count_drift" in report["issues"]
+    assert "ocr_text_collision_risk" in report["issues"]
+    assert "premium_overall_score_drift" in report["issues"]
+    assert "craft_depth_style_drift" in report["issues"]
+
+
+def test_sample_output_similarity_does_not_retry_soft_drift_above_acceptance_score() -> None:
+    sample_blueprint = {
+        "layout_category": "cover_or_hero_visual",
+        "density": "airy",
+        "module_counts": {
+            "horizontal_band_count": 0,
+            "card_like_count": 0,
+            "large_visual_count": 1,
+            "small_icon_like_count": 0,
+            "top_text_band_count": 1,
+            "footer_band_count": 1,
+        },
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": True, "table_allowed": False},
+        "premium_quality": {"overall_score": 8.0, "brand_finish_score": 8.0},
+        "visual_craft_dna": {"rendering_style": "mixed", "lighting": "natural"},
+    }
+    output_blueprint = {
+        "layout_category": "cover_or_hero_visual",
+        "density": "balanced",
+        "module_counts": {
+            "horizontal_band_count": 0,
+            "card_like_count": 0,
+            "large_visual_count": 1,
+            "small_icon_like_count": 1,
+            "top_text_band_count": 1,
+            "footer_band_count": 0,
+        },
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": False, "table_allowed": False},
+        "premium_quality": {"overall_score": 7.8, "brand_finish_score": 7.5},
+        "visual_craft_dna": {"rendering_style": "vector", "lighting": "flat"},
+    }
+
+    report = AIOrchestratorService._sample_output_similarity_report(
+        sample_blueprint=sample_blueprint,
+        output_blueprint=output_blueprint,
+    )
+
+    assert report["score"] >= AIOrchestratorService.SAMPLE_SIMILARITY_ACCEPT_SCORE
+    assert report["retry_recommended"] is False
+    assert report["hard_retry_issues"] == []
+    assert "content_density_drift" in report["issues"]
+    assert "craft_rendering_style_drift" in report["issues"]
+
+
+def test_sample_output_similarity_ignores_document_date_label_as_cta() -> None:
+    sample_blueprint = {
+        "layout_category": "cover_or_hero_visual",
+        "density": "airy",
+        "module_counts": {
+            "horizontal_band_count": 0,
+            "card_like_count": 0,
+            "large_visual_count": 1,
+            "small_icon_like_count": 0,
+            "top_text_band_count": 1,
+            "footer_band_count": 1,
+            "text_block_count": 2,
+            "cta_count": 0,
+        },
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": False, "table_allowed": False},
+        "ocr_structure": {
+            "block_summary": [
+                {"role": "headline", "text_excerpt": "Main headline", "x": 0.1, "y": 0.1, "w": 0.8, "h": 0.1},
+                {"role": "body", "text_excerpt": "Support copy", "x": 0.1, "y": 0.25, "w": 0.8, "h": 0.08},
+            ]
+        },
+    }
+    output_blueprint = {
+        "layout_category": "cover_or_hero_visual",
+        "density": "airy",
+        "closing_grammar": "cta_button",
+        "module_counts": {
+            "horizontal_band_count": 0,
+            "card_like_count": 0,
+            "large_visual_count": 1,
+            "small_icon_like_count": 0,
+            "top_text_band_count": 1,
+            "footer_band_count": 0,
+            "text_block_count": 2,
+            "cta_count": 1,
+        },
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": True, "table_allowed": False},
+        "ocr_structure": {
+            "block_summary": [
+                {"role": "headline", "text_excerpt": "What 27 April 2026 changes", "x": 0.1, "y": 0.06, "w": 0.8, "h": 0.14},
+                {"role": "body", "text_excerpt": "FREE TRADE AGREEMENT 27 APRIL 2026", "x": 0.55, "y": 0.72, "w": 0.35, "h": 0.1},
+            ]
+        },
+    }
+
+    report = AIOrchestratorService._sample_output_similarity_report(
+        sample_blueprint=sample_blueprint,
+        output_blueprint=output_blueprint,
+    )
+
+    assert "cta_grammar_invented" not in report["issues"]
+    assert report["effective_output_cta_count"] == 0
+    assert report["retry_recommended"] is False
+
+
+def test_sample_output_similarity_flags_real_bottom_cta_as_hard_drift() -> None:
+    sample_blueprint = {
+        "layout_category": "cover_or_hero_visual",
+        "density": "airy",
+        "module_counts": {"large_visual_count": 1, "top_text_band_count": 1, "cta_count": 0},
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": False, "table_allowed": False},
+        "ocr_structure": {"block_summary": []},
+    }
+    output_blueprint = {
+        "layout_category": "cover_or_hero_visual",
+        "density": "airy",
+        "module_counts": {"large_visual_count": 1, "top_text_band_count": 1, "cta_count": 1},
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": True, "table_allowed": False},
+        "ocr_structure": {
+            "block_summary": [
+                {"role": "cta", "text_excerpt": "A smarter way to understand fixed-income opportunities", "x": 0.12, "y": 0.83, "w": 0.75, "h": 0.12}
+            ]
+        },
+    }
+
+    report = AIOrchestratorService._sample_output_similarity_report(
+        sample_blueprint=sample_blueprint,
+        output_blueprint=output_blueprint,
+    )
+
+    assert "cta_grammar_invented" in report["issues"]
+    assert "cta_grammar_invented" in report["hard_retry_issues"]
+    assert report["effective_output_cta_count"] == 1
+    assert report["retry_recommended"] is True
+
+
+def test_sample_output_similarity_deferred_logo_overlay_does_not_penalize_brand_finish() -> None:
+    sample_blueprint = {
+        "layout_category": "cover_or_hero_visual",
+        "density": "airy",
+        "module_counts": {"large_visual_count": 1, "top_text_band_count": 1, "logo_count": 1},
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": False, "table_allowed": False},
+        "premium_quality": {"brand_finish_score": 8.0},
+    }
+    output_blueprint = {
+        "layout_category": "cover_or_hero_visual",
+        "density": "airy",
+        "module_counts": {"large_visual_count": 1, "top_text_band_count": 1, "logo_count": 0},
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": False, "table_allowed": False},
+        "premium_quality": {"brand_finish_score": 6.5},
+    }
+
+    report = AIOrchestratorService._sample_output_similarity_report(
+        sample_blueprint=sample_blueprint,
+        output_blueprint=output_blueprint,
+        exact_logo_overlay_deferred=True,
+    )
+
+    assert "premium_brand_finish_score_drift" not in report["issues"]
+    assert report["post_generation_overlays_expected"]["exact_logo"] is True
+    assert report["retry_recommended"] is False
+
+
+def test_merge_vision_page_blueprint_translates_ocr_craft_and_counts() -> None:
+    merged = AIOrchestratorService._merge_vision_page_blueprint(
+        base_blueprint={
+            "layout_category": "editorial_explainer",
+            "density": "balanced",
+            "module_counts": {"horizontal_band_count": 1},
+            "visual_permissions": {"cta_allowed": False},
+        },
+        vision_analysis={
+            "page_blueprint": {
+                "layout_category": "timeline_or_winding_process_path",
+                "density": "dense",
+                "module_counts": {
+                    "row_module_count": 4,
+                    "card_module_count": 3,
+                    "icon_count": 6,
+                    "text_block_count": 7,
+                    "cta_count": 0,
+                },
+                "visual_permissions": {"chart_or_graph_allowed": False, "cta_allowed": False},
+                "closing_grammar": "process_end",
+                "must_match": ["winding process path", "three callouts"],
+            },
+            "ocr_structure": {"readable_text_blocks": 7},
+            "premium_quality": {"overall_score": 0.91},
+            "visual_craft_dna": {"rendering_style": "3d_render"},
+        },
+    )
+
+    assert merged["layout_category"] == "timeline_or_winding_process_path"
+    assert merged["module_counts"]["horizontal_band_count"] == 4
+    assert merged["module_counts"]["card_like_count"] == 3
+    assert merged["module_counts"]["small_icon_like_count"] == 6
+    assert merged["module_counts"]["text_block_count"] == 7
+    assert merged["ocr_structure"]["readable_text_blocks"] == 7
+    assert merged["premium_quality"]["overall_score"] == 0.91
+    assert merged["vision_analysis_status"] == "openai_vision_enhanced"
+
+
+def test_adapt_slide_copy_to_sample_blueprint_enforces_capacity_and_cta_permission() -> None:
+    slide = {
+        "headline": "A policy shift investors should understand",
+        "supporting_line": "This is a very long supporting sentence that should be shortened when the reference page has tight capacity and a very specific card structure.",
+        "proof_points": ["one", "two", "three", "four"],
+        "body_points": ["one", "two", "three", "four"],
+        "stat_highlights": ["one", "two", "three", "four"],
+        "cta": "Invest now",
+        "metadata": {
+            "sample_page_blueprint": {
+                "layout_category": "card_callout_grid",
+                "density": "balanced",
+                "module_counts": {"card_like_count": 2, "horizontal_band_count": 0},
+                "visual_permissions": {"cta_allowed": False},
+            }
+        },
+    }
+
+    adapted = AIOrchestratorService._adapt_slide_copy_to_sample_blueprint(slide)
+
+    assert adapted["cta"] == ""
+    assert len(adapted["proof_points"]) == 2
+    assert adapted["body_points"] == []
+    assert adapted["stat_highlights"] == []
+    assert len(adapted["supporting_line"]) <= 140
+    assert adapted["metadata"]["sample_copy_density_enforced"]["max_items"] == 2
+
+
+def test_adapt_slide_copy_to_sample_blueprint_expands_numbered_rows_from_approved_facts() -> None:
+    slide = {
+        "headline": "What Actually Changed with the Agreement?",
+        "supporting_line": "Tariff reductions, customs efficiency, and service sector gains.",
+        "body": "New Zealand benefits from 95% tariff elimination on exports to India. India commits to faster customs clearance.",
+        "body_points": [
+            "57% of tariffs removed on day one, increasing to 82%",
+            "Immediate NZ$43 million tariff savings expected",
+            "Customs releases within 48 hours; perishables within 24 hours",
+        ],
+        "proof_points": [],
+        "stat_highlights": [],
+        "visual_focus": "A line graph of tariff reduction percentages over time.",
+        "metadata": {
+            "sample_page_blueprint": {
+                "layout_category": "numbered_or_icon_row_list",
+                "density": "balanced",
+                "module_counts": {"horizontal_band_count": 7, "card_like_count": 0},
+                "visual_permissions": {
+                    "cta_allowed": True,
+                    "chart_or_graph_allowed": False,
+                    "dashboard_allowed": False,
+                },
+            }
+        },
+    }
+    content_metadata = {
+        "proof_points": [
+            "Signed on 27 April 2026 - a milestone in bilateral trade.",
+            "95% of New Zealand exports now tariff free or sharply reduced.",
+            "Immediate NZ$43 million tariff savings expected.",
+            "Faster customs clearance boosts trade efficiency.",
+            "Level playing field expanded for services including fintech and education.",
+        ],
+        "stat_highlights": [
+            "57% tariffs eliminated on day one, rising to 82%",
+            "Goods released within 48 hours; perishables in 24 hours",
+            "NZX$43M immediate tariff savings; grows with trade",
+        ],
+    }
+
+    adapted = AIOrchestratorService._adapt_slide_copy_to_sample_blueprint(
+        slide,
+        content_metadata=content_metadata,
+    )
+
+    assert adapted["metadata"]["sample_row_list_target_count"] == 7
+    assert len(adapted["proof_points"]) == 7
+    assert adapted["body_points"] == []
+    assert "line graph" not in adapted["visual_focus"].lower()
+    assert "observed row/list module structure" in adapted["visual_focus"]
+
+
+def test_adapt_slide_copy_to_sample_blueprint_prefers_derived_rows_over_cover_label() -> None:
+    facts = [f"Approved factual line {index}" for index in range(1, 8)]
+    slide = {
+        "headline": "A Different Reference Page",
+        "supporting_line": "Keep the sample structure.",
+        "body_points": facts,
+        "proof_points": [],
+        "stat_highlights": [],
+        "visual_focus": "Generic dashboard with charts and a laptop.",
+        "metadata": {
+            "sample_page_blueprint": {
+                "layout_category": "cover_or_hero_visual",
+                "density": "dense",
+                "module_counts": {
+                    "horizontal_band_count": 5,
+                    "small_icon_like_count": 9,
+                    "large_visual_count": 2,
+                    "top_text_band_count": 3,
+                    "footer_band_count": 2,
+                },
+                "zones": [
+                    {"role": "row_module_1", "x": 0.04, "y": 0.63, "w": 0.92, "h": 0.02},
+                    {"role": "row_module_2", "x": 0.04, "y": 0.66, "w": 0.92, "h": 0.03},
+                    {"role": "row_module_3", "x": 0.04, "y": 0.69, "w": 0.92, "h": 0.02},
+                    {"role": "row_module_4", "x": 0.04, "y": 0.77, "w": 0.92, "h": 0.03},
+                    {"role": "row_module_5", "x": 0.04, "y": 0.80, "w": 0.92, "h": 0.06},
+                ],
+            }
+        },
+    }
+
+    adapted = AIOrchestratorService._adapt_slide_copy_to_sample_blueprint(slide)
+
+    assert adapted["metadata"]["sample_row_list_target_count"] == 5
+    assert len(adapted["proof_points"]) == 5
+    assert adapted["body_points"] == []
+    assert "dashboard" not in adapted["visual_focus"].lower()
+    assert "observed row/list module structure" in adapted["visual_focus"]
+
+
+def test_sample_blueprint_layout_mode_prefers_numbered_cues_over_timeline_label() -> None:
+    blueprint = {
+        "layout_category": "timeline_or_winding_process_path",
+        "module_counts": {
+            "horizontal_band_count": 7,
+            "small_icon_like_count": 14,
+            "card_like_count": 0,
+        },
+        "must_match": [
+            "7 numbered sections",
+            "number badges on left column",
+            "text with right aligned icons",
+        ],
+        "zones": [
+            {"role": "numbered_badge", "x": 0.05, "y": 0.2, "w": 0.1, "h": 0.06},
+            {"role": "body", "x": 0.15, "y": 0.2, "w": 0.85, "h": 0.07},
+        ],
+    }
+
+    mode = AIOrchestratorService._sample_blueprint_layout_mode(blueprint)
+    instruction = AIOrchestratorService._sample_blueprint_layout_instruction(blueprint)
+
+    assert mode == "numbered_or_icon_row_list"
+    assert "7 horizontal/list bands" in instruction
+    assert "number_badge" in instruction
+    assert "observed row/list module structure" in instruction
+
+
+def test_adapt_slide_copy_to_sample_blueprint_enforces_card_callout_grid() -> None:
+    slide = {
+        "headline": "Why It Matters Beyond the Headline",
+        "supporting_line": "Clearer trade rules open doors for diverse investment options.",
+        "body": "The agreement expands opportunities for services exporters.",
+        "body_points": [
+            "Investment provisions foster a fair market for services",
+            "Trade clarity reduces uncertainty for investors",
+            "Supports sustainable growth in key sectors",
+        ],
+        "visual_focus": "3D visualization of a digital workspace with bond analytics graphs.",
+        "metadata": {
+            "sample_page_blueprint": {
+                "layout_category": "card_callout_grid",
+                "density": "airy",
+                "module_counts": {"card_like_count": 3, "horizontal_band_count": 0},
+                "visual_permissions": {"cta_allowed": False},
+            }
+        },
+    }
+
+    adapted = AIOrchestratorService._adapt_slide_copy_to_sample_blueprint(slide)
+
+    assert adapted["metadata"]["sample_card_grid_target_count"] == 3
+    assert len(adapted["proof_points"]) == 3
+    assert adapted["body_points"] == []
+    assert adapted["cta"] == ""
+    assert "observed card/callout module structure" in adapted["visual_focus"]
+    assert "3 card/callout modules" in adapted["visual_focus"]
+    assert "two upper" not in adapted["visual_focus"].lower()
+    assert "unobserved hero scene" in adapted["visual_focus"]
+    assert "digital workspace" not in adapted["visual_focus"].lower()
+
+
+def test_adapt_slide_copy_to_sample_blueprint_enforces_vertical_icon_explainer() -> None:
+    slide = {
+        "headline": "What to Do with This Insight",
+        "supporting_line": "Use the FTA as a foundation for smarter fixed-income investing.",
+        "body_points": [
+            "Explore curated bonds enhanced by the FTA",
+            "Invest with clarity and confidence",
+            "Build stable wealth beyond traditional savings",
+        ],
+        "visual_focus": "A calm scene with a person reviewing portfolios and a bond product card.",
+        "cta": "Start your journey with Jiraaf today.",
+        "metadata": {
+            "sample_page_blueprint": {
+                "layout_category": "editorial_explainer",
+                "density": "airy",
+                "module_counts": {
+                    "horizontal_band_count": 3,
+                    "small_icon_like_count": 3,
+                    "card_like_count": 0,
+                },
+                "visual_permissions": {"cta_allowed": False},
+            }
+        },
+    }
+
+    adapted = AIOrchestratorService._adapt_slide_copy_to_sample_blueprint(slide)
+
+    assert adapted["metadata"]["sample_vertical_icon_target_count"] == 3
+    assert len(adapted["proof_points"]) == 3
+    assert adapted["body_points"] == []
+    assert adapted["cta"] == ""
+    assert "observed icon/text explainer structure" in adapted["visual_focus"]
+    assert "3 horizontal/list bands" in adapted["visual_focus"]
+    assert "central curved path" not in adapted["visual_focus"].lower()
+    assert "unobserved person/product scene" in adapted["visual_focus"]
+    assert "reviewing portfolios" not in adapted["visual_focus"].lower()
+
+
+def test_final_text_render_contract_can_scale_callouts_to_sample_row_count() -> None:
+    proof_points = [f"Approved fact {index}" for index in range(1, 8)]
+
+    contract = AIOrchestratorService._final_text_render_contract(
+        headline="What changed?",
+        proof_points=proof_points,
+        proof_points_limit=7,
+    )
+    joined = " ".join(contract)
+
+    assert "Approved fact 1" in joined
+    assert "Approved fact 7" in joined
+
+
+def test_sample_similarity_repair_prompt_keeps_base_prompt_and_drift_contract() -> None:
+    prompt = "Create the finished slide. " + ("Preserve the sample layout. " * 4000)
+    report = {
+        "score": 0.42,
+        "issues": ["layout_category_drift", "cta_grammar_invented"],
+        "corrections": [
+            "Sample page layout is timeline_or_winding_process_path; output reads as closing_cta_or_product_surface.",
+            "Output introduced a CTA/button-like grammar, but the sample page does not use a CTA region.",
+        ],
+    }
+
+    repaired = AIOrchestratorService._append_sample_similarity_repair_prompt(
+        prompt,
+        similarity_report=report,
+    )
+
+    assert len(repaired) <= AIOrchestratorService.CAROUSEL_IMAGE_PROMPT_MAX_LENGTH
+    assert "post_generation_sample_similarity_repair" in repaired
+    assert "Create the finished slide" in repaired
+    assert "cta_grammar_invented" in repaired
+
+
+def test_sample_similarity_repair_prompt_strips_previous_repair_contract() -> None:
+    prompt = "Create the finished slide. Preserve the selected sample."
+    first_report = {
+        "score": 0.4,
+        "issues": ["layout_category_drift"],
+        "hard_retry_issues": ["layout_category_drift"],
+        "corrections": ["Sample page layout is cover; output reads as grid."],
+    }
+    second_report = {
+        "score": 0.83,
+        "issues": ["craft_lighting_drift"],
+        "hard_retry_issues": [],
+        "corrections": ["Sample lighting is natural; output lighting is flat."],
+    }
+
+    first = AIOrchestratorService._append_sample_similarity_repair_prompt(
+        prompt,
+        similarity_report=first_report,
+    )
+    second = AIOrchestratorService._append_sample_similarity_repair_prompt(
+        first,
+        similarity_report=second_report,
+    )
+
+    assert second.count("post_generation_sample_similarity_repair") == 1
+    assert "layout_category_drift" not in second
+    assert "craft_lighting_drift" in second
+    assert "Keep the current composition" in second
+    assert "Create the finished slide" in second
+
+
+def test_sample_output_similarity_from_paths_compares_rendered_pages() -> None:
+    temp_dir = Path("storage") / "_test_artifacts" / "sample_similarity" / str(uuid4())
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    sample_path = temp_dir / "sample.png"
+    output_path = temp_dir / "output.png"
+    sample = Image.new("RGB", (300, 450), "white")
+    output = Image.new("RGB", (300, 450), "white")
+    sample_bar = Image.new("RGB", (260, 30), "#003878")
+    for index in range(6):
+        sample.paste(sample_bar, (20, 80 + index * 48))
+    output.paste(Image.new("RGB", (220, 140), "#003878"), (40, 210))
+    sample.save(sample_path)
+    output.save(output_path)
+
+    try:
+        report = AIOrchestratorService._sample_output_similarity_from_paths(
+            sample_image_path=str(sample_path),
+            output_image_path=str(output_path),
+            slide_index=1,
+            slide_count=1,
+        )
+    finally:
+        rmtree(temp_dir, ignore_errors=True)
+
+    assert "sample_blueprint" in report
+    assert "output_blueprint" in report
+    assert isinstance(report["score"], float)
+
+
+def test_apply_sequence_pack_slide_metadata_preserves_reference_visual_dna() -> None:
+    slides = [{"slide_index": 1, "slide_count": 1, "headline": "Why this matters now", "metadata": {}}]
+    sequence_pack_slides = [
+        {
+            "slide_index": 1,
+            "headline_hint": "Why this matters now",
+            "structural_cues": ["cover hook"],
+            "sequence_summary": "Why this matters now",
+            "zone_map": {"zones": [{"role": "image", "x": 0.1, "y": 0.2, "w": 0.2, "h": 0.2}]},
+            "composition_logic": {"balance": "centered"},
+            "visual_craft": {"rendering_style": "mixed"},
+            "subject_semantics": {"financial_objects": ["yield curves"]},
+            "editorial_dna": {"copy_density": "high", "closing_style": "reflective_close"},
+        }
+    ]
+
+    enriched = AIOrchestratorService._apply_sequence_pack_slide_metadata(
+        slides,
+        sequence_pack_slides=sequence_pack_slides,
+    )
+    metadata = enriched[0]["metadata"]
+
+    assert metadata["reference_structural_cues"] == ["cover hook"]
+    assert metadata["reference_sequence_summary"] == "Why this matters now"
+    assert metadata["reference_headline_hint"] == "Why this matters now"
+    assert metadata["reference_composition_logic"]["balance"] == "centered"
+    assert metadata["reference_visual_craft"]["rendering_style"] == "mixed"
+    assert metadata["reference_subject_semantics"]["financial_objects"] == ["yield curves"]
+    assert metadata["reference_editorial_dna"]["copy_density"] == "high"
+
+
 def test_orchestrator_build_carousel_slide_render_prompt_includes_story_role_visual_execution_guidance() -> None:
     request = AIOrchestrationRequest(
         tenant_id=uuid4(),
@@ -3054,24 +5050,33 @@ def test_orchestrator_build_carousel_slide_render_prompt_includes_story_role_vis
         }
     )
 
+    slide = AIOrchestratorService._apply_carousel_continuity_contract(
+        [
+            {
+                "headline": "What actually changed",
+                "supporting_line": "Full tariff removal, but with carve-outs",
+                "body": "Almost all Indian exports enter duty-free while India protects sensitive lines.",
+                "cta": "",
+                "metadata": {"story_role": "structure"},
+                "slide_index": 2,
+                "slide_count": 5,
+                "role": "detail",
+            }
+        ]
+    )[0]
+
     prompt = AIOrchestratorService.build_carousel_slide_render_prompt(
         request=request,
         creative_decision=creative_decision,
         message_strategy=None,
         scene_graph=scene_graph,
-        slide={
-            "headline": "What actually changed",
-            "supporting_line": "Full tariff removal, but with carve-outs",
-            "body": "Almost all Indian exports enter duty-free while India protects sensitive lines.",
-            "cta": "",
-            "metadata": {"story_role": "structure"},
-            "slide_index": 2,
-            "slide_count": 5,
-            "role": "detail",
-        },
+        slide=slide,
     )
 
     assert "Execution guidance for this structure slide: use a mechanism-led composition" in prompt
+    assert "Carousel continuity contract:" in prompt
+    assert "Composition evolution target:" in prompt
+    assert "Anti-poster rule:" in prompt
 
 
 def test_orchestrator_carousel_role_title_derives_contextual_fallback_from_headline() -> None:
@@ -3970,6 +5975,10 @@ def test_orchestrator_uses_ai_final_render_for_style_reference_sequence_pack_fro
         "image_led_social",
         decision,
     ) is True
+    assert AIOrchestratorService._ai_final_render_text_strategy(
+        request,
+        decision,
+    ) == "ai_renders_finished_slide_with_exact_copy"
 
 
 def test_orchestrator_generates_multiple_final_render_assets_for_carousel() -> None:
@@ -4052,13 +6061,120 @@ def test_orchestrator_generates_multiple_final_render_assets_for_carousel() -> N
     assert len(response.final_render_assets) >= 3
     assert response.final_render_asset.storage_path == response.final_render_assets[0].storage_path
     assert response.final_render_assets[0].asset_role == "render_preview"
-    assert response.final_render_assets[0].metadata["text_overlay_strategy"] == "ai_renders_approved_text_and_layout"
-    assert "render_overlay_scene_graph" not in response.final_render_assets[0].metadata
-    assert "render_overlay_text" not in response.final_render_assets[0].metadata
+    assert response.final_render_assets[0].metadata["text_overlay_strategy"] == "backend_exact_text_on_ai_text_safe_substrate"
+    assert isinstance(response.final_render_assets[0].metadata["render_overlay_scene_graph"], dict)
+    assert isinstance(response.final_render_assets[0].metadata["render_overlay_text"], dict)
     assert all(asset.asset_role == "render_export" for asset in response.final_render_assets[1:])
     assert [asset.metadata["slide_index"] for asset in response.final_render_assets] == list(range(1, len(response.final_render_assets) + 1))
     assert response.explainability["final_render_assets"][0]["storage_path"] == response.final_render_assets[0].storage_path
-    assert any("Create the finished visual for slide 1 of" in call["prompt"] for call in image_provider.calls)
+    assert any("Create the visual substrate for slide 1 of" in call["prompt"] for call in image_provider.calls)
+
+
+def test_orchestrator_style_reference_only_carousel_final_render_skips_backend_overlay_metadata() -> None:
+    service = AIOrchestratorService()
+    service.guardrails = SimpleNamespace(validate_prompt=lambda *args, **kwargs: None, validate_output=lambda *args, **kwargs: None)
+    service.resolution = SimpleNamespace(
+        build_plan=lambda **kwargs: SimpleNamespace(
+            ordered_knowledge={"brand": [{"content": "Trusted fixed income platform"}]},
+            instructions="Prefer validated brand context.",
+            metadata={"ordered_channels": ["brand"]},
+        )
+    )
+    planning_payload = {
+        "headline": "How the FTA changes the setup",
+        "body": "Start with the signed agreement, then explain what shifts, and close with why it matters for steady wealth builders.",
+        "cta": "Explore fixed-income options",
+        "hashtags": ["#Jiraaf"],
+        "metadata": {
+            "supporting_line": "A sample-driven Jiraaf carousel with clear page-specific structure.",
+            "proof_points": ["Signed on 27 April 2026", "Explains what changes", "Closes with investor takeaway"],
+            "stat_highlights": ["4-slide explainer", "Investor clarity"],
+            "visual_direction": "Premium finance carousel",
+            "design_style": "sample-driven editorial finance creative",
+        },
+        "creative_decision": {
+            "layout_mode": "adapted_template",
+            "confidence": 0.9,
+            "selected_template_name": "Behavioural Biases",
+            "asset_strategy": {
+                "dominant_visual_system": "generated_image",
+                "use_generated_image": True,
+                "template_surface_policy": "style_reference_only",
+            },
+        },
+        "scene_graph": {
+            "canvas": {"width": 1080, "height": 1350, "platform": "linkedin", "file_type": "png"},
+            "layout_mode": "adapted_template",
+            "confidence": 0.9,
+            "layers": ["background", "primary_visual", "content", "brand"],
+            "styles": {"layout_archetype": "editorial_corner_split"},
+            "validation_hints": {"template_surface_policy": "style_reference_only"},
+            "elements": [
+                {"element_id": "background", "element_type": "background", "role": "background", "geometry": {"x": 0, "y": 0, "width": 1, "height": 1}},
+                {"element_id": "headline", "element_type": "text", "role": "headline", "geometry": {"x": 0.05, "y": 0.05, "width": 0.61, "height": 0.15}},
+                {"element_id": "hero", "element_type": "image", "role": "image", "geometry": {"x": 0.06, "y": 0.22, "width": 0.25, "height": 0.22}},
+                {"element_id": "body", "element_type": "text", "role": "body", "geometry": {"x": 0.06, "y": 0.53, "width": 0.25, "height": 0.15}},
+                {"element_id": "logo", "element_type": "logo", "role": "logo", "geometry": {"x": 0.68, "y": 0.04, "width": 0.24, "height": 0.1}},
+            ],
+        },
+    }
+    image_provider = _SequentialCarouselImageProvider()
+    service.providers = SimpleNamespace(
+        get_text_provider=lambda purpose: _StubTextProvider(planning_payload),
+        get_image_provider=lambda: image_provider,
+    )
+    service.tone = SimpleNamespace(evaluate=lambda **kwargs: {"score": 0.9, "summary": "on-brand"})
+    service.storage = SimpleNamespace(exists=lambda path: False, absolute_path=lambda path: path)
+    service._should_block_low_quality_final_render = lambda quality_assessment: False
+
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Write a LinkedIn carousel for Jiraaf on the India-New Zealand Free Trade Agreement signed on 27 April 2026.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png", "size": {"width": 1080, "height": 1350}},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf", "guardrails": {}, "visual_identity": {"brand_color_palette": {"primary": "#003975", "accent": "#FFA400"}}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={"brand": [{"content": "Trusted fixed income platform"}]},
+        layout_decision={"mode": "adapted_template"},
+        template_context={
+            "sequence_pack": {
+                "surface_policy": "style_reference_only",
+                "family_name": "BEHAVIOURAL-BIASES",
+                "slides": [
+                    {
+                        "slide_index": 1,
+                        "template_name": "Behavioural Biases",
+                        "reference_asset_path": "tenant/reference/Behavioural-Biases.pdf",
+                        "zone_map": {
+                            "layout_type": "marketing_social",
+                            "zones": [
+                                {"role": "headline", "x": 0.05, "y": 0.05, "w": 0.61, "h": 0.15},
+                                {"role": "image", "x": 0.06, "y": 0.22, "w": 0.25, "h": 0.22},
+                                {"role": "body", "x": 0.06, "y": 0.53, "w": 0.25, "h": 0.15},
+                            ],
+                        },
+                    }
+                ],
+            }
+        },
+        reference_assets=[],
+        asset_catalog=[],
+        resolution_policy={},
+        generate_image=True,
+    )
+
+    response = service.generate(request)
+
+    assert response.final_render_asset is not None
+    assert response.final_render_asset.metadata["text_overlay_strategy"] == "ai_renders_finished_slide_with_exact_copy"
+    assert "render_overlay_scene_graph" not in response.final_render_asset.metadata
+    assert "render_overlay_text" not in response.final_render_asset.metadata
+    assert any("FINAL TEXT RENDER CONTRACT" in call["prompt"] for call in image_provider.calls)
+    assert all("TEXT OVERLAY CONTRACT" not in call["prompt"] for call in image_provider.calls)
 
 
 def test_orchestrator_normalizes_shorthand_scene_graph_elements() -> None:
@@ -5045,6 +7161,111 @@ def test_orchestrator_generates_ai_final_render_for_image_led_social() -> None:
     assert response.explainability["render_authority"] == "ai"
     assert image_provider.calls[0]["size"] == "1536x1024"
     assert "create one finished premium branded social creative" in image_provider.calls[0]["prompt"].lower()
+
+
+def test_orchestrator_render_final_assets_only_reassesses_stale_quality_before_blocking() -> None:
+    service = AIOrchestratorService()
+    image_provider = _StubImageProvider()
+    service.providers = SimpleNamespace(get_image_provider=lambda: image_provider)
+    service.storage = SimpleNamespace(exists=lambda path: False, absolute_path=lambda path: path)
+
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel about the India-New Zealand FTA.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png", "size": {"width": 1080, "height": 1350}},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf", "guardrails": {}, "visual_identity": {"brand_color_palette": {"primary": "#003975", "accent": "#FFA400"}}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        reference_assets=[],
+        asset_catalog=[],
+        resolution_policy={},
+        generate_image=True,
+    )
+    text_payload = StructuredTextPayload(
+        headline="India-New Zealand FTA explained",
+        body="Start with the signing context. Then explain the export access. Finally show why it matters for investors.",
+        cta="Follow Jiraaf for fixed-income insights.",
+        hashtags=["#Jiraaf"],
+        metadata={"supporting_line": "A clean step-by-step explanation for investors."},
+    )
+    creative_decision = CreativeDecisionPayload(
+        layout_mode="synthesized_layout",
+        confidence=0.86,
+        asset_strategy={"dominant_visual_system": "generated_image", "use_generated_image": True},
+    )
+    scene_graph = GenerationSceneGraph.model_validate(
+        {
+            "canvas": {"width": 1080, "height": 1350, "platform": "linkedin", "file_type": "png"},
+            "layout_mode": "synthesized_layout",
+            "confidence": 0.86,
+            "layers": ["background", "content", "brand"],
+            "elements": [
+                {"element_id": "background", "element_type": "flat_color", "role": "background", "geometry": {"x": 0.0, "y": 0.0, "width": 1.0, "height": 1.0}},
+                {
+                    "element_id": "hero_visual",
+                    "element_type": "image",
+                    "role": "hero_visual",
+                    "geometry": {"x": 0.52, "y": 0.18, "width": 0.34, "height": 0.34},
+                    "validation_hints": {
+                        "visual_depth_style": "flat",
+                        "visual_rendering_style": "editorial",
+                        "visual_polish_level": "clean",
+                        "composition_balance": "asymmetrical",
+                        "composition_framing": "editorial_split",
+                        "subject_scene_type": "analysis surface",
+                    },
+                },
+                {"element_id": "headline", "element_type": "text", "role": "headline", "geometry": {"x": 0.08, "y": 0.12, "width": 0.36, "height": 0.14}, "text": "India-New Zealand FTA explained"},
+                {"element_id": "body", "element_type": "text", "role": "body", "geometry": {"x": 0.08, "y": 0.3, "width": 0.36, "height": 0.18}, "text": "A clean step-by-step explanation for investors."},
+                {"element_id": "logo", "element_type": "logo", "role": "logo", "geometry": {"x": 0.86, "y": 0.04, "width": 0.1, "height": 0.07}},
+            ],
+            "styles": {"layout_archetype": "editorial_split"},
+            "assets": [],
+            "template_adaptation": {},
+            "validation_hints": {},
+        }
+    )
+    selected_reference_images = [
+        {
+            "asset_id": "fta-reference",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/FTA-3.pdf",
+            "mime_type": "application/pdf",
+            "page_count": 5,
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "FTA reference carousel",
+                "format_family": "carousel",
+                "family_name": "FTA",
+            },
+        }
+    ]
+
+    final_assets, final_asset, updated_text_payload, _final_scene_graph = service.render_final_assets_only(
+        request=request,
+        text_payload=text_payload,
+        creative_decision=creative_decision,
+        scene_graph=scene_graph,
+        message_strategy=MessageStrategyPayload(),
+        validation_report=SceneGraphValidationReport(status="clean", issues=[], summary=[], repairable=True),
+        generation_path="image_led_social",
+        selected_reference_images=selected_reference_images,
+        conditioning_reference_images=selected_reference_images,
+        compiled_context={},
+        quality_assessment={"score": 0.51, "issues": ["reference_family_layout_drift"]},
+        quality_retry_attempts=0,
+        fresh_replan_attempted=False,
+    )
+
+    assert final_asset is not None
+    assert final_assets
+    assert image_provider.calls
+    assert len(updated_text_payload.metadata["carousel_slide_specs"]) >= 3
 
 
 def test_orchestrator_defers_exact_logo_overlay_when_real_logo_path_is_available() -> None:
@@ -6035,6 +8256,81 @@ def test_assess_creative_quality_flags_underused_sample_structure_when_reference
     assert "sample_structure_underused" in assessment["issues"]
 
 
+def test_assess_creative_quality_does_not_repair_to_generic_reference_modules_without_sample_geometry() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a premium LinkedIn carousel from the selected client sample.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        resolved_brand_context={"visual_identity": {}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        reference_assets=[],
+        layout_decision={},
+        template_context={
+            "sequence_pack": {
+                "surface_policy": "style_reference_only",
+                "slide_count": 4,
+                "slides": [{"slide_index": 1, "story_role": "hook"}],
+            }
+        },
+    )
+    scene_graph = GenerationSceneGraph.model_validate(
+        {
+            "canvas": {"width": 1080, "height": 1350, "platform": "linkedin", "file_type": "png"},
+            "layout_mode": "synthesized_layout",
+            "confidence": 0.8,
+            "styles": {"layout_archetype": "generic_poster"},
+            "elements": [
+                {
+                    "element_id": "headline",
+                    "element_type": "text",
+                    "role": "headline",
+                    "text": "Sample-led hook",
+                    "geometry": {"x": 0.1, "y": 0.1, "width": 0.5, "height": 0.12, "units": "normalized"},
+                    "visible": True,
+                },
+                {
+                    "element_id": "visual",
+                    "element_type": "image",
+                    "role": "image",
+                    "geometry": {"x": 0.1, "y": 0.35, "width": 0.75, "height": 0.4, "units": "normalized"},
+                    "visible": True,
+                },
+                {
+                    "element_id": "logo",
+                    "element_type": "overlay",
+                    "role": "logo",
+                    "geometry": {"x": 0.72, "y": 0.04, "width": 0.2, "height": 0.08, "units": "normalized"},
+                    "visible": True,
+                },
+            ],
+        }
+    )
+
+    assessment = AIOrchestratorService.assess_creative_quality(
+        scene_graph=scene_graph,
+        creative_decision=CreativeDecisionPayload(asset_strategy={"template_surface_policy": "style_reference_only"}),
+        validation_report=SceneGraphValidationReport(status="clean", issues=[], summary=[]),
+        request=request,
+        selected_reference_images=[{"storage_path": "tenant/reference_creatives/sample.pdf"}],
+        used_support_fallback=False,
+        compiled_context={
+            "reference_family_profile": {
+                "surface_policy": "style_reference_only",
+                "layout_archetypes": ["editorial split"],
+                "module_patterns": ["cover_hero_split", "proof_grid", "closing_cta_strip"],
+            }
+        },
+    )
+
+    assert "reference_family_layout_drift" not in assessment["issues"]
+    assert "reference_family_module_drift" not in assessment["issues"]
+    assert assessment["reference_family_match"]["deferred_to_sample_page_blueprint"] is True
+
+
 def test_select_reference_image_assets_prefers_sequence_pack_asset_from_download_url() -> None:
     request = AIOrchestrationRequest(
         tenant_id=uuid4(),
@@ -6177,6 +8473,66 @@ def test_select_reference_image_assets_prefers_sequence_pack_asset_from_signed_d
     assert [asset["asset_id"] for asset in conditioning] == ["preferred-reference"]
 
 
+def test_reference_family_closeness_uses_active_slide_module_patterns_for_carousel_scene() -> None:
+    scene_graph = GenerationSceneGraph.model_validate(
+        {
+            "canvas": {"width": 1080, "height": 1350, "platform": "linkedin", "file_type": "png"},
+            "layout_mode": "synthesized_layout",
+            "confidence": 0.8,
+            "styles": {"layout_archetype": "marketing_social"},
+            "elements": [
+                {
+                    "element_id": "headline",
+                    "element_type": "text",
+                    "role": "headline",
+                    "visible": True,
+                    "geometry": {"x": 0.05, "y": 0.05, "width": 0.6, "height": 0.12, "units": "normalized"},
+                },
+                {
+                    "element_id": "hero_image",
+                    "element_type": "image",
+                    "role": "image",
+                    "visible": True,
+                    "geometry": {"x": 0.06, "y": 0.22, "width": 0.25, "height": 0.22, "units": "normalized"},
+                },
+                {
+                    "element_id": "logo",
+                    "element_type": "logo",
+                    "role": "logo",
+                    "visible": True,
+                    "geometry": {"x": 0.7, "y": 0.05, "width": 0.25, "height": 0.12, "units": "normalized"},
+                },
+            ],
+        }
+    )
+
+    closeness = AIOrchestratorService._reference_family_closeness(
+        scene_graph,
+        compiled_context={
+            "reference_family_profile": {
+                "preferred_zone_roles": ["headline", "logo", "image", "body", "cta"],
+                "approved_image_zone_roles": ["image"],
+                "module_patterns": ["cover_hero_split", "proof_grid", "closing_cta_strip"],
+                "slide_profiles": [
+                    {
+                        "slide_index": 1,
+                        "zone_roles": ["headline", "logo", "image"],
+                        "approved_image_zone_roles": ["image"],
+                        "module_patterns": ["cover_hero_split"],
+                        "zone_boxes": [
+                            {"role": "headline", "x": 0.05, "y": 0.05, "w": 0.6, "h": 0.12},
+                            {"role": "logo", "x": 0.7, "y": 0.05, "w": 0.25, "h": 0.12},
+                            {"role": "image", "x": 0.06, "y": 0.22, "w": 0.25, "h": 0.22},
+                        ],
+                    }
+                ],
+            }
+        },
+    )
+
+    assert "reference_family_module_drift" not in closeness["issues"]
+
+
 def test_context_visual_craft_hints_apply_to_hero_visual_elements() -> None:
     payload = {
         "elements": [
@@ -6305,6 +8661,31 @@ def test_merge_repair_into_scene_graph_skips_duplicate_text_role_expansion() -> 
     assert len([item for item in merged_elements if item.get("role") == "body"]) == 1
     assert next(item for item in merged_elements if item.get("element_id") == "headline")["text"] == "New headline"
     assert next(item for item in merged_elements if item.get("element_id") == "body")["text"] == "Old body"
+
+
+def test_merge_repair_into_scene_graph_drops_multislide_repair_pollution() -> None:
+    existing = {
+        "elements": [
+            {"element_id": "logo", "role": "logo", "element_type": "logo"},
+        ]
+    }
+    repair = {
+        "elements": [
+            {"element_id": "logo", "role": "logo", "element_type": "logo"},
+            {"element_id": "slide1_headline", "role": "headline", "element_type": "text", "text": "Slide 1"},
+            {"element_id": "slide1_body", "role": "body", "element_type": "text", "text": "Body 1"},
+            {"element_id": "slide2_headline", "role": "headline", "element_type": "text", "text": "Slide 2"},
+            {"element_id": "slide3_body", "role": "body", "element_type": "text", "text": "Body 3"},
+        ]
+    }
+
+    merged = AIOrchestratorService._merge_repair_into_scene_graph(existing, repair, repair_attempt=1)
+    merged_ids = {item.get("element_id") for item in merged["elements"]}
+
+    assert "slide1_headline" in merged_ids
+    assert "slide1_body" in merged_ids
+    assert "slide2_headline" not in merged_ids
+    assert "slide3_body" not in merged_ids
 
 
 def test_assess_creative_quality_flags_missing_reference_conditioning_for_style_reference_carousel() -> None:
@@ -6921,6 +9302,90 @@ def test_compiled_context_authoritative_layout_accepts_sequence_pack_slides() ->
     ) is True
 
 
+def test_orchestrator_normalize_scene_graph_payload_locks_carousel_layout_to_selected_sequence_pack_slide() -> None:
+    service = AIOrchestratorService()
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel about how fixed-income opportunities should be sequenced.",
+        studio_panel={
+            "platform_preset": "linkedin",
+            "format": "carousel",
+            "file_type": "png",
+            "size": {"width": 1080, "height": 1350},
+        },
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf", "guardrails": {}, "visual_identity": {}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={
+            "sequence_pack": {
+                "surface_policy": "style_reference_only",
+                "slide_count": 7,
+                "slides": [
+                    {
+                        "slide_index": 1,
+                        "template_name": "Behavioural Biases",
+                        "zone_map": {
+                            "layout_type": "editorial_split",
+                            "zones": [
+                                {"role": "headline", "x": 0.06, "y": 0.08, "w": 0.36, "h": 0.12},
+                                {"role": "hero_visual", "x": 0.54, "y": 0.14, "w": 0.3, "h": 0.34},
+                                {"role": "body", "x": 0.06, "y": 0.28, "w": 0.34, "h": 0.16},
+                                {"role": "cta", "x": 0.06, "y": 0.82, "w": 0.24, "h": 0.08},
+                            ],
+                        },
+                    }
+                ],
+            }
+        },
+        layout_decision={},
+    )
+    creative_decision = CreativeDecisionPayload(
+        layout_mode="adapted_template",
+        confidence=0.88,
+        asset_strategy={"template_surface_policy": "style_reference_only"},
+    )
+
+    scene_graph = service.normalize_scene_graph_payload(
+        {
+            "canvas": {"width": 1080, "height": 1350, "platform": "linkedin", "file_type": "png"},
+            "styles": {"layout_archetype": "generic_poster"},
+            "elements": [
+                {"element_id": "background", "element_type": "rectangle", "role": "background", "geometry": {"x": 0, "y": 0, "width": 1, "height": 1}},
+                {"element_id": "headline", "element_type": "text_block", "role": "headline", "geometry": {"x": 0.08, "y": 0.08, "width": 0.84, "height": 0.1}, "text": "How the new sequence works"},
+                {"element_id": "hero_image", "element_type": "image", "role": "image", "geometry": {"x": 0.18, "y": 0.28, "width": 0.56, "height": 0.26}},
+                {"element_id": "body", "element_type": "text_block", "role": "body", "geometry": {"x": 0.08, "y": 0.62, "width": 0.82, "height": 0.12}, "text": "Supporting copy"},
+                {"element_id": "cta", "element_type": "text_block", "role": "cta", "geometry": {"x": 0.34, "y": 0.9, "width": 0.28, "height": 0.05}, "text": "Explore now"},
+            ],
+        },
+        fallback={"canvas": {"width": 1080, "height": 1350, "platform": "linkedin", "file_type": "png"}, "elements": []},
+        creative_decision=creative_decision,
+        text_payload={"headline": "How the new sequence works", "body": "Supporting copy", "cta": "Explore now"},
+        request=request,
+        compiled_context={"brand_visual_brief": {"font_families": []}},
+    )
+
+    headline = next(element for element in scene_graph.elements if element.element_id == "headline")
+    hero_image = next(element for element in scene_graph.elements if element.element_id == "hero_image")
+    cta = next(element for element in scene_graph.elements if element.element_id == "cta")
+
+    assert scene_graph.styles["layout_archetype"] == "editorial_split"
+    assert scene_graph.styles["sequence_pack_layout_locked"] is True
+    assert scene_graph.validation_hints["sequence_pack_layout_locked"] is True
+    assert headline.geometry.x == pytest.approx(0.06)
+    assert headline.geometry.width == pytest.approx(0.36)
+    assert hero_image.geometry.x == pytest.approx(0.54)
+    assert hero_image.geometry.height == pytest.approx(0.34)
+    assert hero_image.validation_hints["reference_zone_role"] == "hero_visual"
+    assert hero_image.validation_hints["sequence_pack_layout_locked"] is True
+    assert cta.geometry.x == pytest.approx(0.06)
+    assert cta.geometry.width == pytest.approx(0.24)
+
+
 def test_should_force_sequence_pack_only_when_surface_lock_is_explicit() -> None:
     request = AIOrchestrationRequest(
         tenant_id=uuid4(),
@@ -7205,6 +9670,110 @@ def test_build_image_prompt_includes_reference_family_contract() -> None:
     assert "Reference family module grammar: cover_hero_split, proof_grid, closing_cta_strip." in prompt
 
 
+def test_build_image_prompt_includes_dynamic_visual_style_policy_for_photo_led_brand() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a premium seafood carousel visual.",
+        studio_panel={"platform_preset": "instagram", "format": "carousel", "file_type": "png"},
+        resolved_brand_context={"brand_name": "TGFC", "visual_identity": {}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        reference_assets=[],
+        layout_decision={"mode": "adapted_template"},
+    )
+    text_payload = StructuredTextPayload(
+        headline="Premium seafood, simply presented",
+        body="Keep the food hero clean, premium, and appetizing.",
+        cta="Explore",
+        hashtags=[],
+        metadata={},
+    )
+
+    prompt = AIOrchestratorService.build_image_prompt(
+        request,
+        text_payload,
+        compiled_context={
+            "brand_visual_brief": {
+                "visual_style_policy": {
+                    "dominant_image_mode": "photo",
+                    "dominant_depth_mode": "flat",
+                    "dominant_rendering_mode": "photo",
+                    "dominant_subject_mode": "food",
+                    "dominant_support_mode": "photo_led",
+                    "style_consistency": "strong",
+                    "three_d_usage": "none",
+                    "reference_pattern_priority": "brand_dominant",
+                }
+            }
+        },
+    )
+
+    assert "Dynamic visual-style policy:" in prompt
+    assert "Observed brand style evidence: image mode photo; depth mode flat; rendering mode photo; subject mode food; support mode photo_led; style consistency strong; 3D usage none." in prompt
+    assert "Brand-dominant execution: stay inside this dominant image family" in prompt
+    assert "3D restraint: do not force 3D, isometric, or rendered object scenes" in prompt
+
+
+def test_build_image_prompt_uses_selected_reference_visual_profile_for_mixed_brand() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a retirement planning carousel visual.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        resolved_brand_context={"brand_name": "Mixed Brand", "visual_identity": {}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        reference_assets=[{"asset_id": "mix-3d", "asset_role": "reference_creative"}],
+        layout_decision={"mode": "adapted_template"},
+    )
+    text_payload = StructuredTextPayload(
+        headline="Plan retirement with more clarity",
+        body="Show an explainer visual with a strong opening hook.",
+        cta="Explore",
+        hashtags=[],
+        metadata={},
+    )
+
+    prompt = AIOrchestratorService.build_image_prompt(
+        request,
+        text_payload,
+        compiled_context={
+            "brand_visual_brief": {
+                "visual_style_policy": {
+                    "dominant_image_mode": "mixed",
+                    "dominant_depth_mode": "mixed",
+                    "dominant_rendering_mode": "mixed",
+                    "dominant_subject_mode": "mixed",
+                    "dominant_support_mode": "mixed",
+                    "style_consistency": "mixed",
+                    "three_d_usage": "sometimes",
+                    "reference_pattern_priority": "reference_specific",
+                },
+                "reference_visual_profiles": [
+                    {
+                        "asset_id": "mix-3d",
+                        "image_mode": "3d",
+                        "depth_mode": "true_3d",
+                        "rendering_mode": "3d_render",
+                        "subject_mode": "conceptual",
+                        "support_mode": "mixed",
+                        "story_visual_role": "hook_hero",
+                    }
+                ],
+            }
+        },
+    )
+
+    assert "Reference-specific override: this brand uses multiple visual families" in prompt
+    assert "Selected reference visual profile: image mode 3d; depth mode true_3d; rendering mode 3d_render; subject mode conceptual; support mode mixed; story role hook_hero." in prompt
+    assert "Selected-reference execution: keep this run inside the chosen dimensional family" in prompt
+
+
 def test_build_image_prompt_prioritizes_brand_knowledge_when_present() -> None:
     request = type(
         "Request",
@@ -7461,6 +10030,61 @@ def test_build_image_prompt_ignores_general_knowledge_brief_for_visual_grounding
 
     assert "Brand knowledge grounding: no retrieved brand knowledge is available" in prompt
     assert "template: A polished poster template with a headline about moving from FDs to bonds." not in prompt
+
+
+def test_build_final_render_prompt_includes_dynamic_visual_style_policy_for_3d_brand() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a premium LinkedIn retirement explainer.",
+        studio_panel={"platform_preset": "linkedin", "format": "static", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf", "visual_identity": {}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        reference_assets=[],
+        layout_decision={},
+    )
+    scene_graph = GenerationSceneGraph.model_validate(
+        {
+            "canvas": {"width": 1080, "height": 1350, "platform": "linkedin", "file_type": "png"},
+            "elements": [],
+        }
+    )
+
+    prompt = AIOrchestratorService.build_final_render_prompt(
+        request=request,
+        text_payload=StructuredTextPayload(
+            headline="Retirement planning with more visibility",
+            body="Explain disciplined allocation with a premium dimensional visual.",
+            cta="Explore",
+            hashtags=[],
+            metadata={},
+        ),
+        creative_decision=CreativeDecisionPayload(layout_mode="adapted_template"),
+        scene_graph=scene_graph,
+        compiled_context={
+            "brand_visual_brief": {
+                "visual_style_policy": {
+                    "dominant_image_mode": "3d",
+                    "dominant_depth_mode": "true_3d",
+                    "dominant_rendering_mode": "3d_render",
+                    "dominant_subject_mode": "conceptual",
+                    "dominant_support_mode": "icon_led",
+                    "style_consistency": "strong",
+                    "three_d_usage": "often",
+                    "reference_pattern_priority": "brand_dominant",
+                }
+            }
+        },
+    )
+
+    assert "Dynamic visual-style policy:" in prompt
+    assert "Observed brand style evidence: image mode 3d; depth mode true_3d; rendering mode 3d_render; subject mode conceptual; support mode icon_led; style consistency strong; 3D usage often." in prompt
+    assert "3D execution: the analyzed brand/reference samples regularly use true 3D or dimensional rendering" in prompt
 
 
 def test_build_final_render_prompt_requests_finished_creative_and_complete_copy() -> None:
@@ -8130,6 +10754,1397 @@ def test_orchestrator_select_reference_image_assets_rejects_generic_bond_refs_fo
     assert all("Bond-" not in str(asset.get("storage_path") or "") for asset in selected)
 
 
+def test_orchestrator_select_reference_image_assets_prefers_carousel_native_refs_over_static_surfaces() -> None:
+    reference_assets = [
+        {
+            "asset_id": "retirement-static",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/retirement-static.png",
+            "mime_type": "image/png",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Retirement planning infographic poster",
+                "format_family": "static",
+                "summary": "Retirement planning poster with savings advice.",
+            },
+        },
+        {
+            "asset_id": "retirement-carousel-cover",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/retirement-arc-1.png",
+            "mime_type": "image/png",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Retirement carousel slide 1 cover",
+                "format_family": "carousel",
+                "family_name": "retirement-arc",
+                "summary": "Retirement planning mistakes carousel cover slide.",
+            },
+        },
+        {
+            "asset_id": "retirement-carousel-detail",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/retirement-arc-2.png",
+            "mime_type": "image/png",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Retirement carousel slide 2 detail",
+                "format_family": "carousel",
+                "family_name": "retirement-arc",
+                "summary": "Retirement planning mistakes detail slide.",
+            },
+        },
+        {
+            "asset_id": "retirement-carousel-pdf",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/retirement-arc.pdf",
+            "mime_type": "application/pdf",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Retirement planning mistakes carousel pdf",
+                "format_family": "carousel",
+                "family_name": "retirement-arc",
+                "page_count": 5,
+                "summary": "Retirement planning mistakes storytelling carousel.",
+            },
+        },
+    ]
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a 5-slide LinkedIn carousel on retirement planning mistakes.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png", "size": {"width": 1080, "height": 1350}},
+        resolved_brand_context={},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={},
+        asset_catalog=reference_assets,
+        reference_assets=reference_assets,
+    )
+
+    selected = AIOrchestratorService._select_reference_image_assets(
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            asset_strategy={"use_generated_image": True, "template_surface_policy": "style_reference_only"}
+        ),
+    )
+
+    assert selected
+    assert all("retirement-static.png" not in str(asset.get("storage_path") or "") for asset in selected)
+    assert all(AIOrchestratorService._reference_asset_is_carousel_native(asset) for asset in selected)
+
+
+def test_orchestrator_select_reference_image_assets_prefers_selected_template_family_over_larger_mixed_family() -> None:
+    reference_assets = [
+        {
+            "asset_id": "bond-analyzer-pdf",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/Bond-Analyzer.pdf",
+            "mime_type": "application/pdf",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Bond Analyzer carousel",
+                "format_family": "carousel",
+                "family_name": "Bond Analyzer",
+                "page_count": 5,
+                "summary": "Bond market explainer carousel.",
+            },
+        },
+        {
+            "asset_id": "frb-1",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/Floating-Rate-Bonds-1.png",
+            "mime_type": "image/png",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Floating Rate Bonds slide 1",
+                "format_family": "carousel",
+                "family_name": "Floating Rate Bonds",
+                "reference_slide_index": 1,
+                "summary": "Floating Rate Bonds carousel slide 1.",
+            },
+        },
+        {
+            "asset_id": "frb-2",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/Floating-Rate-Bonds-2.png",
+            "mime_type": "image/png",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Floating Rate Bonds slide 2",
+                "format_family": "carousel",
+                "family_name": "Floating Rate Bonds",
+                "reference_slide_index": 2,
+                "summary": "Floating Rate Bonds carousel slide 2.",
+            },
+        },
+        {
+            "asset_id": "frb-3",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/Floating-Rate-Bonds-3.png",
+            "mime_type": "image/png",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Floating Rate Bonds slide 3",
+                "format_family": "carousel",
+                "family_name": "Floating Rate Bonds",
+                "reference_slide_index": 3,
+                "summary": "Floating Rate Bonds carousel slide 3.",
+            },
+        },
+    ]
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel on the latest announcement by RBI to slash withholding tax on foreign investments in Indian bonds.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png", "size": {"width": 1080, "height": 1350}},
+        resolved_brand_context={},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={},
+        layout_decision={"template_name": "Bond Analyzer"},
+        asset_catalog=reference_assets,
+        reference_assets=reference_assets,
+    )
+
+    selected = AIOrchestratorService._select_reference_image_assets(
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            layout_mode="adapted_template",
+            asset_strategy={"use_generated_image": True},
+        ),
+    )
+
+    assert selected
+    assert selected[0]["storage_path"] == "tenant/reference/Bond-Analyzer.pdf"
+
+
+def test_orchestrator_select_reference_image_assets_allows_stronger_topic_pdf_to_override_weak_selected_family_lock() -> None:
+    reference_assets = [
+        {
+            "asset_id": "behavioural-biases",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/Behavioural-Biases.pdf",
+            "mime_type": "application/pdf",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Behavioural Biases",
+                "format_family": "carousel",
+                "page_count": 7,
+                "summary": "Behavioural finance explainer about investor biases, decision traps, anchoring, framing, and overconfidence.",
+            },
+        },
+        {
+            "asset_id": "frb-3",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/Floating-Rate-Bonds-3.png",
+            "mime_type": "image/png",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Floating Rate Bonds slide 3",
+                "format_family": "carousel",
+                "family_name": "Floating Rate Bonds",
+                "reference_slide_index": 3,
+                "summary": "Floating Rate Bonds explainer slide about rate resets and coupon changes.",
+            },
+        },
+        {
+            "asset_id": "fta-pdf",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/FTA-3.pdf",
+            "mime_type": "application/pdf",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "",
+                "format_family": "carousel",
+                "family_name": "FTA",
+                "reference_slide_index": 3,
+                "summary": "NZ opened 100% of its tariff lines and there are no caps on Indian students in several categories.",
+            },
+        },
+    ]
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Write a LinkedIn carousel for Jiraaf on the India-New Zealand Free Trade Agreement FTA signed on 27 April 2026.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png", "size": {"width": 1080, "height": 1350}},
+        resolved_brand_context={},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={},
+        layout_decision={"template_name": "Behavioural Biases", "selected_template_name": "Behavioural Biases"},
+        asset_catalog=reference_assets,
+        reference_assets=reference_assets,
+    )
+
+    selected = AIOrchestratorService._select_reference_image_assets(
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            selected_template_name="Behavioural Biases",
+            asset_strategy={"use_generated_image": True},
+        ),
+    )
+
+    assert selected
+    assert [asset["storage_path"] for asset in selected] == ["tenant/reference/FTA-3.pdf"]
+
+
+def test_orchestrator_select_reference_image_assets_falls_back_to_static_when_no_carousel_refs_exist() -> None:
+    reference_assets = [
+        {
+            "asset_id": "retirement-static",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/retirement-static.png",
+            "mime_type": "image/png",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Retirement planning infographic poster",
+                "format_family": "static",
+                "summary": "Retirement planning poster with savings advice.",
+            },
+        },
+        {
+            "asset_id": "retirement-infographic",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/retirement-infographic.png",
+            "mime_type": "image/png",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Retirement planning explainer infographic",
+                "format_family": "infographic",
+                "summary": "Retirement planning explainer about inflation risk.",
+            },
+        },
+    ]
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a 5-slide LinkedIn carousel on retirement planning mistakes.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png", "size": {"width": 1080, "height": 1350}},
+        resolved_brand_context={},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={},
+        asset_catalog=reference_assets,
+        reference_assets=reference_assets,
+    )
+
+    selected = AIOrchestratorService._select_reference_image_assets(
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            asset_strategy={"use_generated_image": True, "template_surface_policy": "style_reference_only"}
+        ),
+    )
+
+    assert selected
+    assert {asset["storage_path"] for asset in selected} <= {
+        "tenant/reference/retirement-static.png",
+        "tenant/reference/retirement-infographic.png",
+    }
+
+
+def test_orchestrator_select_reference_image_assets_prefers_static_refs_for_static_generation() -> None:
+    reference_assets = [
+        {
+            "asset_id": "static-ref",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/static-reference.png",
+            "mime_type": "image/png",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Static design sample",
+                "format_family": "static",
+            },
+        },
+        {
+            "asset_id": "carousel-ref",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/carousel-reference.pdf",
+            "mime_type": "application/pdf",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Carousel design sample",
+                "format_family": "carousel",
+                "page_count": 5,
+            },
+        },
+    ]
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a static post about retirement planning.",
+        studio_panel={"platform_preset": "linkedin", "format": "static", "file_type": "png", "size": {"width": 1080, "height": 1350}},
+        resolved_brand_context={},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={},
+        asset_catalog=reference_assets,
+        reference_assets=reference_assets,
+    )
+
+    selected = AIOrchestratorService._select_reference_image_assets(
+        request=request,
+        creative_decision=CreativeDecisionPayload(asset_strategy={"use_generated_image": True}),
+    )
+
+    assert [asset["asset_id"] for asset in selected] == ["static-ref"]
+
+
+def test_orchestrator_select_reference_image_assets_prefers_infographic_refs_for_infographic_generation() -> None:
+    reference_assets = [
+        {
+            "asset_id": "infographic-ref",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/infographic-reference.png",
+            "mime_type": "image/png",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Infographic sample",
+                "format_family": "infographic",
+            },
+        },
+        {
+            "asset_id": "carousel-ref",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/carousel-reference.pdf",
+            "mime_type": "application/pdf",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Carousel design sample",
+                "format_family": "carousel",
+                "page_count": 5,
+            },
+        },
+    ]
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create an infographic about retirement planning.",
+        studio_panel={"platform_preset": "linkedin", "format": "infographic", "file_type": "png", "size": {"width": 1080, "height": 1350}},
+        resolved_brand_context={},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={},
+        asset_catalog=reference_assets,
+        reference_assets=reference_assets,
+    )
+
+    selected = AIOrchestratorService._select_reference_image_assets(
+        request=request,
+        creative_decision=CreativeDecisionPayload(asset_strategy={"use_generated_image": True}),
+    )
+
+    assert [asset["asset_id"] for asset in selected] == ["infographic-ref"]
+
+
+def test_slide_reference_images_routes_carousel_family_by_slide_index() -> None:
+    slide = {
+        "slide_index": 2,
+        "slide_count": 5,
+        "metadata": {"reference_slide_index": 2, "reference_slide_count": 5},
+    }
+    reference_images = [
+        {
+            "asset_id": "carousel-1",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/retirement-arc-1.png",
+            "mime_type": "image/png",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Retirement carousel slide 1",
+                "format_family": "carousel",
+                "family_name": "retirement-arc",
+                "slide_index": 1,
+            },
+        },
+        {
+            "asset_id": "carousel-2",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/retirement-arc-2.png",
+            "mime_type": "image/png",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Retirement carousel slide 2",
+                "format_family": "carousel",
+                "family_name": "retirement-arc",
+                "slide_index": 2,
+            },
+        },
+        {
+            "asset_id": "carousel-3",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/retirement-arc-3.png",
+            "mime_type": "image/png",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Retirement carousel slide 3",
+                "format_family": "carousel",
+                "family_name": "retirement-arc",
+                "slide_index": 3,
+            },
+        },
+    ]
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a 5-slide LinkedIn carousel on retirement planning mistakes.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        resolved_brand_context={},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={},
+        asset_catalog=reference_images,
+        reference_assets=reference_images,
+    )
+
+    routed = AIOrchestratorService._slide_reference_images(
+        slide,
+        reference_images,
+        request=request,
+        creative_decision=CreativeDecisionPayload(asset_strategy={"use_generated_image": True}),
+    )
+
+    assert [asset["asset_id"] for asset in routed] == ["carousel-2"]
+
+
+def test_slide_reference_images_keeps_exact_carousel_slide_match_authoritative() -> None:
+    slide = {
+        "slide_index": 2,
+        "slide_count": 5,
+        "metadata": {
+            "reference_slide_index": 2,
+            "reference_slide_count": 5,
+            "reference_asset_path": "tenant/reference/retirement-arc-2.png",
+            "reference_template_name": "retirement-arc-2",
+        },
+    }
+    reference_images = [
+        {
+            "asset_id": "carousel-2",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/retirement-arc-2.png",
+            "mime_type": "image/png",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Retirement carousel slide 2",
+                "format_family": "carousel",
+                "family_name": "retirement-arc",
+                "reference_slide_index": 2,
+                "summary": "Retirement planning mistakes carousel detail slide.",
+            },
+        },
+        {
+            "asset_id": "topic-pdf",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/retirement-planning-mistakes.pdf",
+            "mime_type": "application/pdf",
+            "page_count": 5,
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Retirement planning mistakes carousel pdf",
+                "format_family": "carousel",
+                "family_name": "retirement-planning-mistakes",
+                "summary": "Retirement planning mistakes, savings gaps, early withdrawals, delayed investing.",
+            },
+        },
+    ]
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a 5-slide LinkedIn carousel on retirement planning mistakes.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        resolved_brand_context={},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={},
+        asset_catalog=reference_images,
+        reference_assets=reference_images,
+    )
+
+    routed = AIOrchestratorService._slide_reference_images(
+        slide,
+        reference_images,
+        request=request,
+        creative_decision=CreativeDecisionPayload(asset_strategy={"use_generated_image": True}),
+    )
+
+    assert [asset["asset_id"] for asset in routed] == ["carousel-2"]
+
+
+def test_slide_reference_images_keeps_exact_carousel_pdf_match_authoritative_and_page_specific() -> None:
+    slide = {
+        "slide_index": 4,
+        "slide_count": 5,
+        "metadata": {
+            "reference_slide_index": 4,
+            "reference_slide_count": 5,
+            "reference_asset_path": "tenant/reference/Bond-Analyzer.pdf",
+            "reference_template_name": "Bond Analyzer",
+        },
+    }
+    reference_images = [
+        {
+            "asset_id": "bond-analyzer-pdf",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/Bond-Analyzer.pdf",
+            "mime_type": "application/pdf",
+            "page_count": 5,
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Bond Analyzer carousel",
+                "format_family": "carousel",
+                "family_name": "Bond Analyzer",
+                "page_count": 5,
+                "summary": "Bond market explainer carousel.",
+            },
+        },
+        {
+            "asset_id": "topic-pdf",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/withholding-tax-explainer.pdf",
+            "mime_type": "application/pdf",
+            "page_count": 5,
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Withholding tax explainer carousel",
+                "format_family": "carousel",
+                "family_name": "withholding-tax-explainer",
+                "summary": "Foreign investment tax changes, RBI, withholding tax, bond market.",
+            },
+        },
+    ]
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a 5-slide LinkedIn carousel on RBI withholding tax changes for foreign bond investors.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        resolved_brand_context={},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={},
+        asset_catalog=reference_images,
+        reference_assets=reference_images,
+    )
+
+    routed = AIOrchestratorService._slide_reference_images(
+        slide,
+        reference_images,
+        request=request,
+        creative_decision=CreativeDecisionPayload(asset_strategy={"use_generated_image": True}),
+    )
+
+    assert [asset["asset_id"] for asset in routed] == ["bond-analyzer-pdf"]
+    assert routed[0]["metadata"]["conditioning_page_index"] == 4
+
+
+def test_slide_reference_images_prefers_selected_family_exact_slide_over_larger_other_family() -> None:
+    slide = {
+        "slide_index": 2,
+        "slide_count": 5,
+        "metadata": {"reference_slide_index": 2, "reference_slide_count": 5},
+    }
+    reference_images = [
+        {
+            "asset_id": "selected-1",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/Retirement-Arc-1.png",
+            "mime_type": "image/png",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Retirement Arc slide 1",
+                "format_family": "carousel",
+                "family_name": "Retirement Arc",
+                "reference_slide_index": 1,
+            },
+        },
+        {
+            "asset_id": "selected-2",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/Retirement-Arc-2.png",
+            "mime_type": "image/png",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Retirement Arc slide 2",
+                "format_family": "carousel",
+                "family_name": "Retirement Arc",
+                "reference_slide_index": 2,
+            },
+        },
+        {
+            "asset_id": "other-1",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/Floating-Rate-Bonds-1.png",
+            "mime_type": "image/png",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Floating Rate Bonds slide 1",
+                "format_family": "carousel",
+                "family_name": "Floating Rate Bonds",
+                "reference_slide_index": 1,
+            },
+        },
+        {
+            "asset_id": "other-2",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/Floating-Rate-Bonds-2.png",
+            "mime_type": "image/png",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Floating Rate Bonds slide 2",
+                "format_family": "carousel",
+                "family_name": "Floating Rate Bonds",
+                "reference_slide_index": 2,
+            },
+        },
+        {
+            "asset_id": "other-3",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/Floating-Rate-Bonds-3.png",
+            "mime_type": "image/png",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Floating Rate Bonds slide 3",
+                "format_family": "carousel",
+                "family_name": "Floating Rate Bonds",
+                "reference_slide_index": 3,
+            },
+        },
+    ]
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a 5-slide LinkedIn carousel on retirement planning mistakes.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        resolved_brand_context={},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={},
+        layout_decision={"template_name": "Retirement Arc"},
+        asset_catalog=reference_images,
+        reference_assets=reference_images,
+    )
+
+    routed = AIOrchestratorService._slide_reference_images(
+        slide,
+        reference_images,
+        request=request,
+        creative_decision=CreativeDecisionPayload(layout_mode="adapted_template", asset_strategy={"use_generated_image": True}),
+    )
+
+    assert [asset["asset_id"] for asset in routed] == ["selected-2"]
+
+
+def test_slide_reference_images_falls_back_to_selected_family_pdf_when_exact_slide_asset_missing() -> None:
+    slide = {
+        "slide_index": 3,
+        "slide_count": 5,
+        "metadata": {"reference_slide_index": 3, "reference_slide_count": 5},
+    }
+    reference_images = [
+        {
+            "asset_id": "bond-analyzer-pdf",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/Bond-Analyzer.pdf",
+            "mime_type": "application/pdf",
+            "page_count": 5,
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Bond Analyzer carousel",
+                "format_family": "carousel",
+                "family_name": "Bond Analyzer",
+                "page_count": 5,
+            },
+        },
+        {
+            "asset_id": "other-1",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/Floating-Rate-Bonds-1.png",
+            "mime_type": "image/png",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Floating Rate Bonds slide 1",
+                "format_family": "carousel",
+                "family_name": "Floating Rate Bonds",
+                "reference_slide_index": 1,
+            },
+        },
+        {
+            "asset_id": "other-2",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/Floating-Rate-Bonds-2.png",
+            "mime_type": "image/png",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Floating Rate Bonds slide 2",
+                "format_family": "carousel",
+                "family_name": "Floating Rate Bonds",
+                "reference_slide_index": 2,
+            },
+        },
+        {
+            "asset_id": "other-3",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/Floating-Rate-Bonds-3.png",
+            "mime_type": "image/png",
+            "trust_level": "trusted",
+            "metadata": {
+                "label": "Floating Rate Bonds slide 3",
+                "format_family": "carousel",
+                "family_name": "Floating Rate Bonds",
+                "reference_slide_index": 3,
+            },
+        },
+    ]
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel on RBI withholding tax changes for foreign bond investors.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        resolved_brand_context={},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={},
+        layout_decision={"template_name": "Bond Analyzer"},
+        asset_catalog=reference_images,
+        reference_assets=reference_images,
+    )
+
+    routed = AIOrchestratorService._slide_reference_images(
+        slide,
+        reference_images,
+        request=request,
+        creative_decision=CreativeDecisionPayload(layout_mode="adapted_template", asset_strategy={"use_generated_image": True}),
+    )
+
+    assert [asset["asset_id"] for asset in routed] == ["bond-analyzer-pdf"]
+    assert routed[0]["metadata"]["conditioning_page_index"] == 3
+
+
+def test_merge_slide_layout_anchor_reference_preserves_layout_anchor_alongside_topic_support() -> None:
+    behaviour_asset = {
+        "asset_id": "behaviour-pdf",
+        "asset_role": "reference_creative",
+        "storage_path": "tenant/reference/Behavioural-Biases.pdf",
+        "mime_type": "application/pdf",
+        "page_count": 7,
+        "trust_level": "trusted",
+        "metadata": {
+            "label": "Behavioural Biases carousel",
+            "format_family": "carousel",
+            "family_name": "Behavioural Biases",
+            "page_count": 7,
+        },
+    }
+    fta_asset = {
+        "asset_id": "fta-pdf",
+        "asset_role": "reference_creative",
+        "storage_path": "tenant/reference/FTA-3.pdf",
+        "mime_type": "application/pdf",
+        "page_count": 7,
+        "trust_level": "trusted",
+        "metadata": {
+            "label": "FTA carousel",
+            "format_family": "carousel",
+            "family_name": "FTA",
+            "summary": "India New Zealand Free Trade Agreement FTA signed 27 April 2026, tariff liberalization, bilateral investment framework, export access, duty-free trade.",
+        },
+    }
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Write a LinkedIn carousel for Jiraaf on the India-New Zealand Free Trade Agreement FTA signed on 27 April 2026.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        resolved_brand_context={},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={
+            "sequence_pack": {
+                "family_name": "BEHAVIOURAL-BIASES",
+                "surface_policy": "style_reference_only",
+                "slides": [
+                    {
+                        "slide_index": 1,
+                        "template_name": "Behavioural Biases",
+                        "reference_asset_path": "tenant/reference/Behavioural-Biases.pdf",
+                        "template_asset_path": "tenant/reference/Behavioural-Biases.pdf",
+                        "zone_map": {
+                            "layout_type": "marketing_social",
+                            "zones": [
+                                {"role": "headline", "x": 0.05, "y": 0.05, "w": 0.6, "h": 0.12},
+                                {"role": "image", "x": 0.06, "y": 0.22, "w": 0.25, "h": 0.22},
+                                {"role": "body", "x": 0.06, "y": 0.53, "w": 0.25, "h": 0.15},
+                            ],
+                        },
+                    }
+                ],
+            }
+        },
+        asset_catalog=[behaviour_asset, fta_asset],
+        reference_assets=[behaviour_asset, fta_asset],
+    )
+    slides = [
+        {
+            "slide_index": 1,
+            "slide_count": 7,
+            "headline": "FTA signed",
+            "metadata": {
+                "reference_slide_index": 1,
+                "reference_slide_count": 7,
+                "reference_template_name": "Behavioural Biases",
+                "reference_asset_path": "tenant/reference/Behavioural-Biases.pdf",
+                "reference_template_asset_path": "tenant/reference/Behavioural-Biases.pdf",
+                "reference_layout_asset_path": "tenant/reference/Behavioural-Biases.pdf",
+                "reference_zone_map": {
+                    "layout_type": "marketing_social",
+                    "zones": [
+                        {"role": "headline", "x": 0.05, "y": 0.05, "w": 0.6, "h": 0.12},
+                        {"role": "image", "x": 0.06, "y": 0.22, "w": 0.25, "h": 0.22},
+                        {"role": "body", "x": 0.06, "y": 0.53, "w": 0.25, "h": 0.15},
+                    ],
+                },
+                "conditioning_page_index": 1,
+            },
+        }
+    ]
+    merged = AIOrchestratorService._merge_slide_layout_anchor_reference(
+        slides[0],
+        [fta_asset],
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            layout_mode="adapted_template",
+            asset_strategy={"use_generated_image": True, "template_surface_policy": "style_reference_only"},
+        ),
+    )
+
+    assert [asset["storage_path"] for asset in merged] == [
+        "tenant/reference/Behavioural-Biases.pdf",
+        "tenant/reference/FTA-3.pdf",
+    ]
+    assert merged[0]["metadata"]["conditioning_page_index"] == 1
+
+
+def test_merge_slide_layout_anchor_reference_preserves_layout_anchor_even_without_zone_map() -> None:
+    behaviour_asset = {
+        "asset_id": "behaviour-pdf",
+        "asset_role": "reference_creative",
+        "storage_path": "tenant/reference/Behavioural-Biases.pdf",
+        "mime_type": "application/pdf",
+        "page_count": 7,
+        "trust_level": "trusted",
+        "metadata": {
+            "label": "Behavioural Biases carousel",
+            "format_family": "carousel",
+            "family_name": "Behavioural Biases",
+            "page_count": 7,
+        },
+    }
+    fta_asset = {
+        "asset_id": "fta-pdf",
+        "asset_role": "reference_creative",
+        "storage_path": "tenant/reference/FTA-3.pdf",
+        "mime_type": "application/pdf",
+        "page_count": 4,
+        "trust_level": "trusted",
+        "metadata": {
+            "label": "FTA carousel",
+            "format_family": "carousel",
+            "family_name": "FTA",
+        },
+    }
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Write a LinkedIn carousel for Jiraaf on the India-New Zealand FTA.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        resolved_brand_context={},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={},
+        asset_catalog=[behaviour_asset, fta_asset],
+        reference_assets=[behaviour_asset, fta_asset],
+    )
+    slide = {
+        "slide_index": 5,
+        "slide_count": 5,
+        "metadata": {
+            "reference_slide_index": 7,
+            "reference_slide_count": 7,
+            "reference_template_name": "Behavioural Biases",
+            "reference_asset_path": "tenant/reference/Behavioural-Biases.pdf",
+            "reference_template_asset_path": "tenant/reference/Behavioural-Biases.pdf",
+            "reference_layout_asset_path": "tenant/reference/Behavioural-Biases.pdf",
+        },
+    }
+
+    merged = AIOrchestratorService._merge_slide_layout_anchor_reference(
+        slide,
+        [fta_asset],
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            layout_mode="adapted_template",
+            asset_strategy={"use_generated_image": True, "template_surface_policy": "style_reference_only"},
+        ),
+    )
+
+    assert [asset["storage_path"] for asset in merged] == [
+        "tenant/reference/Behavioural-Biases.pdf",
+        "tenant/reference/FTA-3.pdf",
+    ]
+    assert merged[0]["metadata"]["conditioning_page_index"] == 7
+
+
+def test_apply_sequence_pack_slide_metadata_maps_shorter_output_to_last_reference_slide() -> None:
+    slides = [
+        {"headline": f"Output {idx}", "metadata": {}}
+        for idx in range(1, 6)
+    ]
+    sequence_pack_slides = [
+        {
+            "slide_index": idx,
+            "template_id": f"tpl-{idx}",
+            "template_name": f"Behavioural Biases {idx}",
+            "template_asset_path": "tenant/reference/Behavioural-Biases.pdf",
+            "reference_asset_path": "tenant/reference/Behavioural-Biases.pdf",
+            "zone_map": {"zones": [{"role": "headline", "x": 0.05, "y": 0.05, "w": 0.6, "h": 0.12}]},
+        }
+        for idx in range(1, 8)
+    ]
+
+    enriched = AIOrchestratorService._apply_sequence_pack_slide_metadata(
+        slides,
+        sequence_pack_slides=sequence_pack_slides,
+        carousel_archetype="ordered_story",
+    )
+
+    assert len(enriched) == 5
+    assert enriched[0]["metadata"]["reference_slide_index"] == 1
+    assert enriched[-1]["metadata"]["reference_slide_index"] == 7
+    assert enriched[-1]["metadata"]["conditioning_page_index"] == 7
+
+
+def test_align_carousel_slide_specs_to_selected_references_keeps_style_reference_layout_anchor_when_topic_reference_is_present() -> None:
+    behaviour_asset = {
+        "asset_id": "behaviour-pdf",
+        "asset_role": "reference_creative",
+        "storage_path": "tenant/reference/Behavioural-Biases.pdf",
+        "mime_type": "application/pdf",
+        "page_count": 7,
+        "trust_level": "trusted",
+        "metadata": {
+            "label": "Behavioural Biases carousel",
+            "family_name": "Behavioural Biases",
+            "format_family": "carousel",
+            "page_count": 7,
+        },
+    }
+    fta_asset = {
+        "asset_id": "fta-pdf",
+        "asset_role": "reference_creative",
+        "storage_path": "tenant/reference/FTA-3.pdf",
+        "mime_type": "application/pdf",
+        "page_count": 4,
+        "trust_level": "trusted",
+        "metadata": {
+            "label": "FTA carousel",
+            "family_name": "FTA",
+            "format_family": "carousel",
+            "summary": "India New Zealand FTA signed 27 April 2026 with tariff liberalization and investment framework.",
+            "conditioning_page_index": 1,
+        },
+    }
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Write a LinkedIn carousel for Jiraaf on the India-New Zealand FTA signed on 27 April 2026.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        resolved_brand_context={},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={},
+        layout_decision={},
+        asset_catalog=[behaviour_asset, fta_asset],
+        reference_assets=[behaviour_asset, fta_asset],
+    )
+    slides = [
+        {
+            "slide_index": 1,
+            "slide_count": 5,
+            "headline": "FTA signed",
+            "metadata": {
+                "reference_slide_index": 1,
+                "reference_slide_count": 7,
+                "reference_template_name": "Behavioural Biases",
+                "reference_asset_path": "tenant/reference/Behavioural-Biases.pdf",
+                "reference_template_asset_path": "tenant/reference/Behavioural-Biases.pdf",
+                "reference_layout_asset_path": "tenant/reference/Behavioural-Biases.pdf",
+            },
+        }
+    ]
+
+    aligned = AIOrchestratorService._align_carousel_slide_specs_to_selected_references(
+        slides,
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            layout_mode="adapted_template",
+            selected_template_name="Behavioural Biases",
+            asset_strategy={"use_generated_image": True, "template_surface_policy": "style_reference_only"},
+        ),
+    )
+
+    metadata = aligned[0]["metadata"]
+    assert metadata["reference_asset_path"] == "tenant/reference/Behavioural-Biases.pdf"
+    assert metadata["reference_template_name"] == "Behavioural Biases"
+    assert metadata.get("reference_topic_asset_path") in {None, "tenant/reference/FTA-3.pdf"}
+
+
+def test_build_carousel_slide_render_prompt_mentions_layout_anchor_and_topic_support_for_style_reference_only() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Write a LinkedIn carousel for Jiraaf on the India-New Zealand Free Trade Agreement FTA signed on 27 April 2026.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        resolved_brand_context={"brand_name": "Jiraaf Updated", "visual_identity": {"brand_color_palette": {"primary": "#003975", "secondary": "#FFA400"}}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={},
+        asset_catalog=[],
+        reference_assets=[],
+    )
+    slide = {
+        "role": "detail",
+        "headline": "FTA implications",
+        "supporting_line": "What changes for investors",
+        "slide_index": 2,
+        "slide_count": 7,
+        "metadata": {
+            "story_role": "structure",
+            "reference_template_name": "Behavioural Biases",
+            "reference_slide_index": 2,
+            "reference_slide_count": 7,
+            "reference_layout_asset_path": "tenant/reference/Behavioural-Biases.pdf",
+            "reference_topic_asset_path": "tenant/reference/FTA-3.pdf",
+            "conditioning_page_index": 2,
+            "reference_topic_page_index": 2,
+            "reference_zone_map": {
+                "layout_type": "marketing_social",
+                "zones": [
+                    {"role": "headline", "x": 0.05, "y": 0.05, "w": 0.6, "h": 0.12},
+                    {"role": "image", "x": 0.06, "y": 0.22, "w": 0.25, "h": 0.22},
+                    {"role": "body", "x": 0.06, "y": 0.53, "w": 0.25, "h": 0.15},
+                ],
+            },
+        },
+    }
+    scene_graph = GenerationSceneGraph.model_validate(
+        {
+            "canvas": {"width": 1080, "height": 1350, "platform": "linkedin", "file_type": "png"},
+            "layout_mode": "adapted_template",
+            "elements": [
+                {"element_id": "background", "element_type": "rectangle", "role": "background", "geometry": {"x": 0, "y": 0, "width": 1, "height": 1}},
+                {"element_id": "headline", "element_type": "text_block", "role": "headline", "geometry": {"x": 0.05, "y": 0.05, "width": 0.6, "height": 0.12}},
+                {"element_id": "hero", "element_type": "image", "role": "hero_visual", "geometry": {"x": 0.06, "y": 0.22, "width": 0.25, "height": 0.22}},
+                {"element_id": "body", "element_type": "text_block", "role": "body", "geometry": {"x": 0.06, "y": 0.53, "width": 0.25, "height": 0.15}},
+            ],
+        }
+    )
+    reference_images = [
+        {
+            "asset_id": "behaviour-pdf",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/Behavioural-Biases.pdf",
+            "mime_type": "application/pdf",
+            "page_count": 7,
+            "metadata": {"conditioning_page_index": 2, "label": "Behavioural Biases carousel"},
+        },
+        {
+            "asset_id": "fta-pdf",
+            "asset_role": "reference_creative",
+            "storage_path": "tenant/reference/FTA-3.pdf",
+            "mime_type": "application/pdf",
+            "page_count": 7,
+            "metadata": {"conditioning_page_index": 2, "label": "FTA carousel"},
+        },
+    ]
+
+    prompt = AIOrchestratorService.build_carousel_slide_render_prompt(
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            layout_mode="adapted_template",
+            asset_strategy={"use_generated_image": True, "template_surface_policy": "style_reference_only"},
+        ),
+        message_strategy=None,
+        slide=slide,
+        scene_graph=scene_graph,
+        reference_images=reference_images,
+        retry_note=None,
+        visual_explanation_plan=None,
+        compiled_context={},
+    )
+
+    assert "Authoritative layout anchor for this slide:" in prompt
+    assert "Behavioural Biases" in prompt
+    assert "Supporting topic-evidence reference:" in prompt
+    assert "FTA-3.pdf" in prompt
+    assert "must not replace the selected sample's layout skeleton" in prompt
+    assert "Sample-page visual obedience rule" in prompt
+    assert "not a loose mood board" in prompt
+    assert "Do not replace the sample page with generic finance imagery" in prompt
+    assert "Sample-aware data visual rule" in prompt
+    assert "Numbers in the topic alone are not permission to invent bar charts" in prompt
+    assert prompt.index("Authoritative layout anchor for this slide:") < prompt.index("Respect the reference/template layout strictly")
+    assert "FINAL TEXT RENDER CONTRACT" in prompt
+    assert "TEXT OVERLAY CONTRACT" not in prompt
+
+
+def test_build_carousel_slide_render_prompt_hardens_top_right_logo_text_clearance() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Write a LinkedIn carousel for Jiraaf on the India-New Zealand FTA.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        resolved_brand_context={"brand_name": "Jiraaf", "visual_identity": {}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+    )
+    scene_graph = GenerationSceneGraph.model_validate(
+        {
+            "canvas": {"width": 1080, "height": 1350, "platform": "linkedin", "file_type": "png"},
+            "layout_mode": "adapted_template",
+            "elements": [
+                {
+                    "element_id": "logo",
+                    "element_type": "logo",
+                    "role": "logo",
+                    "geometry": {"x": 0.79, "y": 0.036, "width": 0.18, "height": 0.09, "units": "normalized"},
+                },
+                {
+                    "element_id": "headline",
+                    "element_type": "text_block",
+                    "role": "headline",
+                    "geometry": {"x": 0.05, "y": 0.05, "width": 0.7, "height": 0.12, "units": "normalized"},
+                },
+            ],
+        }
+    )
+
+    prompt = AIOrchestratorService.build_carousel_slide_render_prompt(
+        request=request,
+        creative_decision=CreativeDecisionPayload(layout_mode="adapted_template", asset_strategy={"template_surface_policy": "style_reference_only"}),
+        message_strategy=None,
+        slide={
+            "role": "closing",
+            "headline": "What to do with this insight",
+            "supporting_line": "Explore curated fixed-income options on Jiraaf aligned with emerging trade dynamics",
+            "slide_index": 4,
+            "slide_count": 4,
+            "metadata": {"story_role": "takeaway"},
+        },
+        scene_graph=scene_graph,
+        reference_images=[],
+        compiled_context={},
+    )
+
+    assert "no readable text may overlap that rectangle" in prompt
+    assert "keep its right edge before about" in prompt
+    assert "use additional lines rather than stretching under the logo" in prompt
+
+
+def test_build_carousel_slide_render_prompt_uses_sequence_pack_policy_when_decision_omits_flag() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Write a LinkedIn carousel for Jiraaf on the India-New Zealand FTA.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        resolved_brand_context={"brand_name": "Jiraaf", "visual_identity": {}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={
+            "sequence_pack": {
+                "family_name": "FTA-EXPLAINER",
+                "surface_policy": "style_reference_only",
+                "slide_count": 7,
+                "slides": [
+                    {"slide_index": 1, "reference_asset_path": "tenant/reference/FTA-EXPLAINER-1.png"}
+                ],
+            }
+        },
+        asset_catalog=[],
+        reference_assets=[],
+    )
+    slide = {
+        "role": "hook",
+        "headline": "FTA signed. What changes?",
+        "supporting_line": "The agreement can alter trade access and investor context.",
+        "slide_index": 1,
+        "slide_count": 5,
+        "metadata": {
+            "reference_template_name": "FTA Explainer",
+            "reference_slide_index": 1,
+            "reference_slide_count": 7,
+            "reference_layout_asset_path": "tenant/reference/FTA-EXPLAINER-1.png",
+        },
+    }
+    scene_graph = GenerationSceneGraph.model_validate(
+        {
+            "canvas": {"width": 1080, "height": 1350, "platform": "linkedin", "file_type": "png"},
+            "layout_mode": "adapted_template",
+            "elements": [
+                {"element_id": "background", "element_type": "rectangle", "role": "background", "geometry": {"x": 0, "y": 0, "width": 1, "height": 1}},
+                {"element_id": "headline", "element_type": "text_block", "role": "headline", "geometry": {"x": 0.08, "y": 0.08, "width": 0.72, "height": 0.14}},
+            ],
+        }
+    )
+
+    prompt = AIOrchestratorService.build_carousel_slide_render_prompt(
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            layout_mode="adapted_template",
+            asset_strategy={"use_generated_image": True},
+        ),
+        message_strategy=None,
+        slide=slide,
+        scene_graph=scene_graph,
+        reference_images=[],
+        retry_note=None,
+        visual_explanation_plan=None,
+        compiled_context={},
+    )
+
+    assert "Authoritative layout anchor for this slide:" in prompt
+    assert "FINAL TEXT RENDER CONTRACT" in prompt
+    assert "TEXT OVERLAY CONTRACT" not in prompt
+
+
+def test_build_carousel_slide_render_prompt_adds_fallback_contract_when_sample_metadata_is_thin() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Write a LinkedIn carousel for Jiraaf on the India-New Zealand FTA.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        resolved_brand_context={"brand_name": "Jiraaf", "visual_identity": {}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={
+            "sequence_pack": {
+                "family_name": "FTA-3",
+                "surface_policy": "style_reference_only",
+                "slide_count": 4,
+                "slides": [{"slide_index": 1, "reference_asset_path": "tenant/reference/FTA-3.pdf"}],
+            }
+        },
+        asset_catalog=[],
+        reference_assets=[],
+    )
+    scene_graph = GenerationSceneGraph.model_validate(
+        {
+            "canvas": {"width": 1080, "height": 1350, "platform": "linkedin"},
+            "elements": [
+                {"element_id": "headline", "element_type": "text", "role": "headline", "geometry": {"x": 0.08, "y": 0.08, "width": 0.62, "height": 0.14}},
+                {"element_id": "image", "element_type": "image", "role": "image", "geometry": {"x": 0.52, "y": 0.28, "width": 0.34, "height": 0.32}},
+            ],
+        }
+    )
+    prompt = AIOrchestratorService.build_carousel_slide_render_prompt(
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            layout_mode="adapted_template",
+            asset_strategy={"template_surface_policy": "style_reference_only"},
+        ),
+        message_strategy=None,
+        slide={
+            "role": "hook",
+            "headline": "India-New Zealand FTA: the overlooked investor context",
+            "supporting_line": "The visible terms are only the first layer.",
+            "body_points": ["Tariff access and services mobility reshape the practical context."],
+            "visual_focus": "Premium 3D trade document opening into isometric Jiraaf finance modules.",
+            "slide_index": 1,
+            "slide_count": 4,
+            "metadata": {
+                "story_role": "hook",
+                "reference_slide_index": 1,
+                "reference_slide_count": 4,
+                "reference_layout_asset_path": "tenant/reference/FTA-3.pdf",
+            },
+        },
+        scene_graph=scene_graph,
+        reference_images=[],
+        compiled_context={},
+    )
+
+    assert "SAMPLE METADATA FALLBACK CONTRACT JSON" in prompt
+    assert "sample_metadata_thin" in prompt
+    assert "avoid generic finance motifs, charts, documents, dashboards, or stock symbols" in prompt
+    assert "FINAL TEXT RENDER CONTRACT" in prompt
+    assert "TEXT OVERLAY CONTRACT" not in prompt
+
+
+def test_style_reference_only_final_asset_metadata_strips_backend_overlay_payloads() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Write a LinkedIn carousel for Jiraaf on the India-New Zealand FTA.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        resolved_brand_context={},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={"sequence_pack": {"surface_policy": "style_reference_only", "slides": []}},
+    )
+
+    metadata = AIOrchestratorService._enforce_style_reference_only_final_asset_metadata(
+        {
+            "text_overlay_strategy": "backend_exact_text_on_ai_text_safe_substrate",
+            "render_overlay_scene_graph": {"elements": []},
+            "render_overlay_text": {"headline": "Bad overlay"},
+        },
+        request=request,
+        creative_decision=CreativeDecisionPayload(asset_strategy={}),
+        slide_metadata={},
+    )
+
+    assert metadata["text_overlay_strategy"] == "ai_renders_finished_slide_with_exact_copy"
+    assert metadata["style_reference_only_overlay_guard"] == "backend_overlay_disabled"
+    assert "render_overlay_scene_graph" not in metadata
+    assert "render_overlay_text" not in metadata
+
+
 def test_assess_creative_quality_flags_unrelated_selected_reference_when_topic_pdf_exists() -> None:
     fta_asset = {
         "asset_id": "fta-pdf",
@@ -8544,14 +12559,332 @@ def test_orchestrator_carousel_render_prompt_avoids_literal_sample_reuse_for_sty
         ),
         message_strategy=None,
         slide=slide,
+        scene_graph=GenerationSceneGraph.model_validate(
+            {
+                "canvas": {"width": 1080, "height": 1350, "platform": "linkedin"},
+                "elements": [
+                    {"element_id": "headline", "element_type": "text", "role": "headline", "geometry": {"x": 0.08, "y": 0.1, "width": 0.56, "height": 0.14}},
+                    {"element_id": "body", "element_type": "text", "role": "body", "geometry": {"x": 0.08, "y": 0.28, "width": 0.44, "height": 0.2}},
+                    {"element_id": "image", "element_type": "image", "role": "image", "geometry": {"x": 0.54, "y": 0.2, "width": 0.32, "height": 0.34}},
+                ],
+            }
+        ),
         reference_images=[
             {"asset_id": "sample-1", "asset_role": "reference_creative", "storage_path": "tenant/reference/TOP-MISTAKES-1.png", "metadata": {"label": "TOP-MISTAKES-1"}},
         ],
     )
 
-    assert "reproduce the uploaded sample slide artwork" in prompt
+    assert "adapt the selected sample page's layout skeleton closely" in prompt
+    assert "Do not copy the uploaded sample slide's literal text, logo, or exact original artwork" in prompt
     assert "Primary layout anchor for this slide: uploaded reference" not in prompt
-    assert "Reference images available for composition" not in prompt
+    assert "FINAL TEXT RENDER CONTRACT" in prompt
+    assert "TEXT OVERLAY CONTRACT" not in prompt
+    assert "Use this headline verbatim" in prompt
+    assert "Render the copy as part of the finished design" in prompt
+    assert len(prompt) <= AIOrchestratorService.CAROUSEL_IMAGE_PROMPT_MAX_LENGTH
+
+
+def test_carousel_render_prompt_uses_all_approved_module_lines_for_sample_modules() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel on India-New Zealand FTA changes for investors.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png", "size": {"width": 1080, "height": 1350}},
+        resolved_brand_context={"brand_name": "Jiraaf", "visual_identity": {"palette_roles": {"background": "#FFFFFF", "primary": "#003975", "secondary": "#FFA400"}}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={"sequence_pack": {"surface_policy": "style_reference_only", "slide_count": 4}},
+    )
+    slide = {
+        "role": "detail",
+        "headline": "What changed with the agreement?",
+        "supporting_line": "Tariff reductions, customs efficiency, and service-sector gains.",
+        "proof_points": ["Most tariffs are removed immediately"],
+        "body_points": ["NZ$43M immediate tariff savings", "Faster customs clearance boosts trade efficiency"],
+        "stat_highlights": ["Signed on 27 April 2026"],
+        "cta": "",
+        "slide_index": 2,
+        "slide_count": 4,
+        "metadata": {
+            "story_role": "structure",
+            "reference_template_name": "FTA (3)",
+            "reference_layout_asset_path": "tenant/reference/FTA-3.pdf",
+            "reference_slide_index": 2,
+            "reference_slide_count": 4,
+            "sample_page_blueprint": {
+                "layout_category": "numbered_or_icon_row_list",
+                "module_counts": {"horizontal_band_count": 4, "small_icon_like_count": 4},
+            },
+        },
+    }
+
+    prompt = AIOrchestratorService.build_carousel_slide_render_prompt(
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            layout_mode="adapted_template",
+            asset_strategy={"use_generated_image": True, "template_surface_policy": "style_reference_only"},
+        ),
+        message_strategy=None,
+        slide=slide,
+        scene_graph=GenerationSceneGraph.model_validate(
+            {
+                "canvas": {"width": 1080, "height": 1350, "platform": "linkedin", "file_type": "png"},
+                "layout_mode": "adapted_template",
+                "elements": [],
+            }
+        ),
+        reference_images=[
+            {
+                "asset_id": "fta-sample",
+                "asset_role": "reference_creative",
+                "storage_path": "tenant/reference/FTA-3.pdf",
+                "mime_type": "application/pdf",
+                "metadata": {"conditioning_page_index": 2, "label": "FTA (3)"},
+            }
+        ],
+        compiled_context={},
+    )
+
+    assert "This slide needs 4 proof/callout module(s)" in prompt
+    assert "SAMPLE MODULE COUNT LOCK: render exactly 4 visible row/list module(s)" in prompt
+    assert "Do not merge, drop, compress, or replace these rows" in prompt
+    assert "Most tariffs are removed immediately" in prompt
+    assert "NZ$43M immediate tariff savings" in prompt
+    assert "Faster customs clearance boosts trade efficiency" in prompt
+    assert "Signed on 27 April 2026" in prompt
+    assert len(prompt) <= AIOrchestratorService.CAROUSEL_IMAGE_PROMPT_MAX_LENGTH
+
+
+def test_carousel_render_prompt_locks_card_grid_against_topic_hero_scene() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel on FTA mobility and economic growth.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png", "size": {"width": 1080, "height": 1350}},
+        resolved_brand_context={"brand_name": "Jiraaf", "visual_identity": {"palette_roles": {"background": "#FFFFFF", "primary": "#003975", "secondary": "#FFA400"}}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={"sequence_pack": {"surface_policy": "style_reference_only", "slide_count": 4}},
+    )
+    slide = {
+        "role": "detail",
+        "headline": "Mobility and economic growth",
+        "supporting_line": "Relaxed mobility rules for professionals and students can deepen integration.",
+        "proof_points": [
+            "Professionals and students gain clearer mobility routes",
+            "Trade clarity supports sector confidence",
+            "Investors still need risk checks",
+        ],
+        "cta": "",
+        "slide_index": 3,
+        "slide_count": 4,
+        "metadata": {
+            "story_role": "strategic_meaning",
+            "reference_template_name": "FTA (3)",
+            "reference_layout_asset_path": "tenant/reference/FTA-3.pdf",
+            "reference_slide_index": 3,
+            "reference_slide_count": 4,
+            "sample_page_blueprint": {
+                "layout_category": "card_callout_grid",
+                "module_counts": {"card_like_count": 3, "small_icon_like_count": 3, "large_visual_count": 0},
+                "must_match": ["three distinct cards with icons", "headline above cards"],
+            },
+        },
+    }
+
+    prompt = AIOrchestratorService.build_carousel_slide_render_prompt(
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            layout_mode="adapted_template",
+            asset_strategy={"use_generated_image": True, "template_surface_policy": "style_reference_only"},
+        ),
+        message_strategy=None,
+        slide=slide,
+        scene_graph=GenerationSceneGraph.model_validate(
+            {
+                "canvas": {"width": 1080, "height": 1350, "platform": "linkedin", "file_type": "png"},
+                "layout_mode": "adapted_template",
+                "elements": [],
+            }
+        ),
+        reference_images=[
+            {
+                "asset_id": "fta-sample",
+                "asset_role": "reference_creative",
+                "storage_path": "tenant/reference/FTA-3.pdf",
+                "mime_type": "application/pdf",
+                "metadata": {"conditioning_page_index": 3, "label": "FTA (3)"},
+            }
+        ],
+        compiled_context={},
+    )
+
+    assert "SAMPLE MODULE COUNT LOCK: render exactly 3 distinct card/callout module(s)" in prompt
+    assert "Do not convert the card grid into a standalone hero scene" in prompt
+    assert "Topic concepts such as people, mobility, products, screens, documents, or market objects must be translated into small module-level icons" in prompt
+    assert "Professionals and students gain clearer mobility routes" in prompt
+    assert len(prompt) <= AIOrchestratorService.CAROUSEL_IMAGE_PROMPT_MAX_LENGTH
+
+
+def test_carousel_render_prompt_does_not_leak_unrelated_reusable_asset_names_for_style_reference_only() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel on India-New Zealand FTA changes for investors.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png", "size": {"width": 1080, "height": 1350}},
+        resolved_brand_context={
+            "brand_name": "Jiraaf",
+            "visual_identity": {
+                "palette_roles": {"background": "#FFFFFF", "primary": "#003975", "secondary": "#FFA400"},
+                "reusable_design_assets": [
+                    {"label": "Floating Rate Bonds icon pack", "summary": "Floating Rate Bonds explainer graphics"},
+                    {"label": "Bond Strategy calculator card"},
+                ],
+            },
+        },
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={"sequence_pack": {"surface_policy": "style_reference_only", "slide_count": 4}},
+    )
+    slide = {
+        "role": "hook",
+        "headline": "Why the India-New Zealand FTA matters",
+        "supporting_line": "A new trade chapter can shape investor context.",
+        "proof_points": ["Signed on 27 April 2026", "Tariff relief changes bilateral trade flows"],
+        "cta": "",
+        "slide_index": 1,
+        "slide_count": 4,
+        "metadata": {
+            "story_role": "hook",
+            "reference_template_name": "FTA (3)",
+            "reference_layout_asset_path": "tenant/reference/FTA-3.pdf",
+            "reference_slide_index": 1,
+            "reference_slide_count": 4,
+            "sample_page_blueprint": {
+                "layout_category": "photo_led_cover",
+                "module_counts": {"large_visual_count": 1, "top_text_band_count": 2},
+            },
+        },
+    }
+
+    prompt = AIOrchestratorService.build_carousel_slide_render_prompt(
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            layout_mode="adapted_template",
+            asset_strategy={"use_generated_image": True, "template_surface_policy": "style_reference_only"},
+        ),
+        message_strategy=None,
+        slide=slide,
+        scene_graph=GenerationSceneGraph.model_validate(
+            {
+                "canvas": {"width": 1080, "height": 1350, "platform": "linkedin", "file_type": "png"},
+                "layout_mode": "adapted_template",
+                "elements": [],
+            }
+        ),
+        reference_images=[
+            {
+                "asset_id": "fta-sample",
+                "asset_role": "reference_creative",
+                "storage_path": "tenant/reference/FTA-3.pdf",
+                "mime_type": "application/pdf",
+                "metadata": {"conditioning_page_index": 1, "label": "FTA (3)"},
+            }
+        ],
+        compiled_context={},
+    )
+
+    assert "FINAL TEXT RENDER CONTRACT" in prompt
+    assert "Why the India-New Zealand FTA matters" in prompt
+    assert "Signed on 27 April 2026" in prompt
+    assert "Floating Rate Bonds" not in prompt
+    assert "Bond Strategy" not in prompt
+    assert "Reusable brand design assets available as stylistic cues" not in prompt
+    assert len(prompt) <= AIOrchestratorService.CAROUSEL_IMAGE_PROMPT_MAX_LENGTH
+
+
+def test_build_carousel_slide_render_prompt_suppresses_irrelevant_sequence_family_authority() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a 5-slide LinkedIn carousel on retirement planning mistakes.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png", "size": {"width": 1080, "height": 1350}},
+        resolved_brand_context={"brand_name": "Jiraaf", "visual_identity": {"palette_roles": {"background": "#FFFFFF", "primary": "#003975", "secondary": "#FFA400"}}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={
+            "sequence_pack": {
+                "family_name": "FLOATING-RATE-BONDS",
+                "surface_policy": "style_reference_only",
+                "slide_count": 6,
+                "slides": [
+                    {"slide_index": idx, "template_name": f"Floating-Rate-Bonds-{idx}"}
+                    for idx in range(1, 7)
+                ],
+            }
+        },
+    )
+    compiled_context = {
+        "template_fit_brief": {
+            "template_name": "Floating-Rate-Bonds-5",
+            "sequence_pack": {
+                "family_name": "FLOATING-RATE-BONDS",
+                "surface_policy": "style_reference_only",
+                "slide_count": 6,
+                "story_roles": ["hook", "structure", "detail", "undercovered_angle", "strategic_meaning", "takeaway"],
+                "slides": [{"slide_index": idx, "template_name": f"Floating-Rate-Bonds-{idx}"} for idx in range(1, 7)],
+            },
+        }
+    }
+    slide = {
+        "role": "hook",
+        "headline": "Are you making these retirement planning mistakes?",
+        "supporting_line": "Rethink retirement planning with clarity and control.",
+        "proof_points": [],
+        "cta": "",
+        "slide_index": 1,
+        "slide_count": 5,
+        "metadata": {
+            "reference_template_name": "Floating-Rate-Bonds-5",
+            "reference_slide_index": 1,
+            "reference_slide_count": 6,
+        },
+    }
+
+    prompt = AIOrchestratorService.build_carousel_slide_render_prompt(
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            layout_mode="adapted_template",
+            selected_template_name="Floating-Rate-Bonds-5",
+            asset_strategy={"template_surface_policy": "style_reference_only"},
+        ),
+        message_strategy=None,
+        slide=slide,
+        scene_graph=GenerationSceneGraph.model_validate(
+            {
+                "canvas": {"width": 1080, "height": 1350, "platform": "linkedin"},
+                "elements": [
+                    {"element_id": "headline", "element_type": "text", "role": "headline", "geometry": {"x": 0.08, "y": 0.1, "width": 0.56, "height": 0.14}},
+                    {"element_id": "body", "element_type": "text", "role": "body", "geometry": {"x": 0.08, "y": 0.28, "width": 0.44, "height": 0.2}},
+                    {"element_id": "image", "element_type": "image", "role": "image", "geometry": {"x": 0.54, "y": 0.2, "width": 0.32, "height": 0.34}},
+                ],
+            }
+        ),
+        reference_images=[],
+        compiled_context=compiled_context,
+    )
+
+    assert "Sequence blueprint authority: FLOATING-RATE-BONDS" not in prompt
+    assert "Active sample/template authority: Floating-Rate-Bonds-5" not in prompt
+    assert len(prompt) <= AIOrchestratorService.CAROUSEL_IMAGE_PROMPT_MAX_LENGTH
 
 
 def test_build_carousel_slide_render_prompt_includes_selected_sample_alignment_guidance() -> None:
@@ -8638,6 +12971,63 @@ def test_build_carousel_slide_render_prompt_includes_selected_sample_alignment_g
     assert "headline" in prompt
     assert "cta" in prompt
     assert "Anti-generic rule: do not reduce this slide to a basic hero-left/text-right finance post" in prompt
+
+
+def test_build_carousel_slide_render_prompt_includes_dynamic_visual_style_policy() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel about retirement planning.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        resolved_brand_context={"brand_name": "Jiraaf", "visual_identity": {}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        reference_assets=[],
+        layout_decision={"mode": "adapted_template"},
+    )
+    scene_graph = GenerationSceneGraph.model_validate(
+        {
+            "canvas": {"width": 1080, "height": 1350, "platform": "linkedin", "file_type": "png"},
+            "elements": [],
+        }
+    )
+
+    prompt = AIOrchestratorService.build_carousel_slide_render_prompt(
+        request=request,
+        creative_decision=CreativeDecisionPayload(layout_mode="adapted_template", asset_strategy={"use_generated_image": True}),
+        message_strategy=None,
+        slide={
+            "role": "hook",
+            "headline": "Planning your retirement",
+            "supporting_line": "See how disciplined allocation creates visibility.",
+            "proof_points": ["Longer horizon", "Income planning"],
+            "cta": "",
+            "slide_index": 1,
+            "slide_count": 5,
+            "metadata": {"story_role": "hook_hero"},
+        },
+        scene_graph=scene_graph,
+        compiled_context={
+            "brand_visual_brief": {
+                "visual_style_policy": {
+                    "dominant_image_mode": "3d",
+                    "dominant_depth_mode": "true_3d",
+                    "dominant_rendering_mode": "3d_render",
+                    "dominant_subject_mode": "conceptual",
+                    "dominant_support_mode": "mixed",
+                    "style_consistency": "strong",
+                    "three_d_usage": "often",
+                    "reference_pattern_priority": "brand_dominant",
+                }
+            }
+        },
+    )
+
+    assert "Dynamic visual-style policy:" in prompt
+    assert "Brand-dominant execution: stay inside this dominant image family" in prompt
+    assert "3D execution: the analyzed brand/reference samples regularly use true 3D or dimensional rendering" in prompt
 
 
 def test_build_carousel_slide_render_prompt_includes_current_sequence_slide_contract() -> None:
@@ -9674,8 +14064,12 @@ def test_orchestrator_repairs_weak_carousel_semantics_before_final_render() -> N
             "confidence": 0.82,
             "layers": ["background", "content"],
             "elements": [
+                {"element_id": "background", "element_type": "rectangle", "role": "background", "geometry": {"x": 0, "y": 0, "width": 1, "height": 1}, "style": {"fill": "#F8FAFC"}},
                 {"element_id": "headline", "element_type": "text", "role": "headline", "geometry": {"x": 0.08, "y": 0.1, "width": 0.42, "height": 0.16}, "text": "India-New Zealand FTA: What the headlines don't tell you"},
                 {"element_id": "body", "element_type": "text", "role": "body", "geometry": {"x": 0.08, "y": 0.3, "width": 0.44, "height": 0.16}, "text": "This deal matters beyond the tariff headline."},
+                {"element_id": "hero_visual", "element_type": "image", "role": "primary_visual", "geometry": {"x": 0.56, "y": 0.16, "width": 0.34, "height": 0.34}, "description": "Premium 3D trade agreement visual with finance modules."},
+                {"element_id": "proof_card", "element_type": "shape", "role": "proof_points", "geometry": {"x": 0.08, "y": 0.52, "width": 0.42, "height": 0.14}, "text": "Tariff + services + strategic signal"},
+                {"element_id": "logo", "element_type": "logo", "role": "logo", "geometry": {"x": 0.78, "y": 0.04, "width": 0.14, "height": 0.06}},
                 {"element_id": "cta", "element_type": "text", "role": "cta", "geometry": {"x": 0.08, "y": 0.84, "width": 0.28, "height": 0.08}, "text": "Read the full breakdown"},
             ],
             "styles": {"layout_archetype": "editorial_stack"},
@@ -9695,6 +14089,7 @@ def test_orchestrator_repairs_weak_carousel_semantics_before_final_render() -> N
         "hashtags": ["#FTA"],
         "metadata": {
             "supporting_line": "The visible terms are only the first layer.",
+            "hook_type": "contrast-led",
             "claim_evidence_pairs": [
                 {
                     "claim": "Tariff cuts define the visible structure",
@@ -9713,12 +14108,13 @@ def test_orchestrator_repairs_weak_carousel_semantics_before_final_render() -> N
                 {
                     "slide_number": 1,
                     "slide_role": "hook",
-                    "headline": "The overlooked headline",
+                    "headline": "India-New Zealand FTA: what most summaries miss",
                     "supporting_line": "The visible terms are only the first layer.",
                     "body": "Most summaries stop at tariff cuts, but the real story sits in the hidden clauses and the speed of the deal.",
                     "body_points": [],
                     "proof_points": [],
                     "stat_highlights": [],
+                    "visual_focus": "Premium 3D trade-agreement document object opening into Jiraaf-style finance modules.",
                     "cta": "",
                 },
                 {
@@ -9730,6 +14126,7 @@ def test_orchestrator_repairs_weak_carousel_semantics_before_final_render() -> N
                     "body_points": ["Goods access and reduced barriers form the deal's most legible terms."],
                     "proof_points": ["Tariff cuts define the visible structure: Goods access and reduced barriers form the deal's most legible terms."],
                     "stat_highlights": [],
+                    "visual_focus": "2.5D tariff and market-access dashboard with modular cards and clean evidence labels.",
                     "cta": "",
                 },
                 {
@@ -9741,17 +14138,19 @@ def test_orchestrator_repairs_weak_carousel_semantics_before_final_render() -> N
                     "body_points": ["Services and mobility provisions explain what many summaries missed."],
                     "proof_points": ["Mobility clauses are the undercovered angle: Services and mobility provisions explain what many summaries missed."],
                     "stat_highlights": [],
+                    "visual_focus": "Isometric services and mobility pathway visual with evidence-document cards and trade-route accents.",
                     "cta": "",
                 },
                 {
                     "slide_number": 4,
                     "slide_role": "strategic_meaning",
-                    "headline": "Why this matters strategically",
+                    "headline": "Why the FTA matters beyond tariffs",
                     "supporting_line": "The speed of the agreement is the bigger signal.",
                     "body": "Fast closure after years of slower movement makes the FTA a signal about alignment and positioning, not just trade mechanics.",
                     "body_points": ["Fast closure after years of slower movement changes how the deal should be read."],
                     "proof_points": ["The speed signals strategic alignment: Fast closure after years of slower movement changes how the deal should be read."],
                     "stat_highlights": [],
+                    "visual_focus": "Brand-led closing composition with strategic signal chart, product-style card, and decisive CTA area.",
                     "cta": "Read the full breakdown",
                 },
             ],
@@ -9866,3 +14265,309 @@ def test_orchestrator_content_semantic_validator_flags_static_without_support() 
 
     assert report["status"] == "needs_rewrite"
     assert any(issue["code"] == "static_missing_support" for issue in report["issues"])
+
+
+def test_orchestrator_content_semantic_validator_flags_unbacked_carousel_data_visual() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel about the India-New Zealand FTA.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+    )
+    payload = StructuredTextPayload(
+        headline="India-New Zealand FTA",
+        body="A generic explainer.",
+        cta="Read more",
+        hashtags=["#FTA"],
+        metadata={
+            "hook_type": "contrast-led",
+            "carousel_slide_specs": [
+                {
+                    "slide_number": 1,
+                    "slide_role": "hook",
+                    "headline": "India-New Zealand FTA: the signal beneath the headline",
+                    "supporting_line": "See the chart view.",
+                    "body": "Dashboard view.",
+                    "visual_focus": "Premium dashboard with bar chart, line graph, axes, and metric modules.",
+                    "cta": "",
+                },
+                {
+                    "slide_number": 2,
+                    "slide_role": "closing",
+                    "headline": "What investors should watch next",
+                    "supporting_line": "Read the deal through a market-access lens.",
+                    "body": "Watch how implementation shapes sector opportunity.",
+                    "proof_points": ["Market access and implementation cadence shape sector opportunity."],
+                    "visual_focus": "Brand-led closing module with product-style card.",
+                    "cta": "Read the full breakdown",
+                },
+            ],
+        },
+    )
+
+    report = AIOrchestratorService._validate_content_semantics(request=request, text_payload=payload)
+    issue_codes = {issue["code"] for issue in report["issues"]}
+
+    assert "carousel_unbacked_data_visual" in issue_codes
+    assert "carousel_unsupported_numeric_data_visual" in issue_codes
+
+
+def test_orchestrator_content_semantic_validator_accepts_backed_qualitative_data_modules() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel about the India-New Zealand FTA.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+    )
+    payload = StructuredTextPayload(
+        headline="India-New Zealand FTA: the investment lens",
+        body="The agreement matters through market access and strategic alignment.",
+        cta="Read the full breakdown",
+        hashtags=["#FTA"],
+        metadata={
+            "hook_type": "contrast-led",
+            "claim_evidence_pairs": [
+                {
+                    "claim": "The FTA is more than tariff news",
+                    "evidence": "Market access, services, and implementation cadence shape how the deal should be read.",
+                }
+            ],
+            "carousel_slide_specs": [
+                {
+                    "slide_number": 1,
+                    "slide_role": "hook",
+                    "headline": "India-New Zealand FTA: the signal beneath the headline",
+                    "supporting_line": "The deal is a strategic signal, not only a tariff update.",
+                    "body": "Market access, services, and implementation cadence shape how the deal should be read.",
+                    "body_points": ["Market access, services, and implementation cadence shape how the deal should be read."],
+                    "proof_points": ["The deal should be read through market access, services, and implementation cadence."],
+                    "claim_evidence_pairs": [
+                        {
+                            "claim": "The FTA is more than tariff news",
+                            "evidence": "Market access, services, and implementation cadence shape how the deal should be read.",
+                        }
+                    ],
+                    "visual_focus": "Premium qualitative dashboard with labeled evidence modules for market access, services, and implementation cadence.",
+                    "cta": "",
+                },
+                {
+                    "slide_number": 2,
+                    "slide_role": "closing",
+                    "headline": "What investors should watch next",
+                    "supporting_line": "Read the deal through a market-access lens.",
+                    "body": "Watch how implementation shapes sector opportunity.",
+                    "body_points": ["Implementation will shape how the market-access signal translates into sector opportunity."],
+                    "proof_points": ["Implementation cadence is the next signal to watch."],
+                    "visual_focus": "Brand-led closing composition with product-style action card.",
+                    "cta": "Read the full breakdown",
+                },
+            ],
+        },
+    )
+
+    report = AIOrchestratorService._validate_content_semantics(request=request, text_payload=payload)
+    issue_codes = {issue["code"] for issue in report["issues"]}
+
+    assert "carousel_unbacked_data_visual" not in issue_codes
+    assert "carousel_unsupported_numeric_data_visual" not in issue_codes
+
+
+def test_orchestrator_content_semantic_preflight_replaces_sample_headings_before_repair() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Write a LinkedIn carousel for Jiraaf on the India-New Zealand FTA signed on 27 April 2026.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+    )
+    payload = StructuredTextPayload(
+        headline="India-New Zealand FTA",
+        body="A concise explainer.",
+        cta="Read more",
+        hashtags=["#FTA"],
+        metadata={
+            "hook_type": "proof-led",
+            "claim_evidence_pairs": [{"claim": "FTA signing date", "evidence": "27 April 2026"}],
+            "carousel_slide_specs": [
+                {
+                    "slide_number": 1,
+                    "slide_role": "hook",
+                    "headline": "Why this matters now",
+                    "supporting_line": "The agreement was signed on 27 April 2026.",
+                    "body": "India and New Zealand signed the FTA on 27 April 2026.",
+                    "proof_points": ["27 April 2026"],
+                    "visual_focus": "Premium trade route module.",
+                    "cta": "",
+                },
+                {
+                    "slide_number": 2,
+                    "slide_role": "takeaway",
+                    "headline": "What to do with this insight",
+                    "supporting_line": "Read the agreement through an investor lens.",
+                    "body": "Watch how implementation shapes the market-access signal.",
+                    "visual_focus": "Brand-led closing composition.",
+                    "cta": "Explore curated fixed-income insights",
+                },
+            ],
+        },
+    )
+
+    cleaned = AIOrchestratorService._preflight_text_payload_semantics(
+        request=request,
+        text_payload=payload,
+        compiled_context={
+            "research_editorial_brief": {
+                "fact_model": {
+                    "verified_facts": [
+                        {"label": "FTA signing date", "value": "27 April 2026"},
+                    ]
+                }
+            }
+        },
+    )
+    report = AIOrchestratorService._validate_content_semantics(
+        request=request,
+        text_payload=cleaned,
+        compiled_context={
+            "research_editorial_brief": {
+                "fact_model": {
+                    "verified_facts": [
+                        {"label": "FTA signing date", "value": "27 April 2026"},
+                    ]
+                }
+            }
+        },
+    )
+
+    headlines = [slide["headline"] for slide in cleaned.metadata["carousel_slide_specs"]]
+    assert "Why this matters now" not in headlines
+    assert "What to do with this insight" not in headlines
+    assert "carousel_raw_generic_headline" not in {issue["code"] for issue in report["issues"]}
+
+
+def test_orchestrator_content_semantic_validator_flags_static_numeric_chart_without_values() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a static post about alternative investments.",
+        studio_panel={"platform_preset": "linkedin", "format": "static", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+    )
+    payload = StructuredTextPayload(
+        headline="Read private credit with more context",
+        body="A comparison-led panel.",
+        cta="Explore more",
+        hashtags=["#Investing"],
+        metadata={
+            "proof_points": ["Credit quality, tenure, and repayment structure should be compared before investing."],
+            "static_panel_spec": {
+                "panel_goal": "comparison",
+                "dominant_message": "Read private credit with more context",
+                "supporting_lines": ["Compare credit quality, tenure, and repayment structure."],
+                "visual_focus": "Large numeric line graph with axes and ranked percentage bars.",
+            },
+        },
+    )
+
+    report = AIOrchestratorService._validate_content_semantics(request=request, text_payload=payload)
+    issue_codes = {issue["code"] for issue in report["issues"]}
+
+    assert "static_unsupported_numeric_data_visual" in issue_codes
+
+
+def test_build_image_prompt_includes_data_visualization_execution_contract() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn infographic with a comparison table about bond strategy.",
+        studio_panel={"platform_preset": "linkedin", "format": "infographic", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf", "visual_identity": {"brand_color_palette": {"primary": "#003975"}}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+    )
+    payload = StructuredTextPayload(
+        headline="Barbell, bullet, or ladder?",
+        body="Compare bond strategies by cash-flow need, reinvestment risk, and portfolio flexibility.",
+        cta="Explore the strategy",
+        hashtags=["#Bonds"],
+        metadata={
+            "supporting_line": "Each structure solves a different portfolio problem.",
+            "proof_points": ["Cash-flow need, reinvestment risk, and flexibility define the right strategy."],
+            "visual_direction": "Premium comparison table with labeled strategy columns and evidence modules.",
+        },
+    )
+
+    prompt = AIOrchestratorService.build_image_prompt(
+        request=request,
+        text_payload=payload,
+        creative_decision=CreativeDecisionPayload(asset_strategy={"use_generated_image": True}),
+    )
+
+    assert "Data visualization execution contract for infographic" in prompt
+    assert "approved data/content anchors" in prompt
+    assert "never render generic bars, fake axes, random dashboard tiles" in prompt
+
+
+def test_build_image_prompt_strictly_prohibits_data_visuals_without_valid_anchors() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn static post with a chart.",
+        studio_panel={"platform_preset": "linkedin", "format": "static", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf", "visual_identity": {"brand_color_palette": {"primary": "#003975"}}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+    )
+    payload = StructuredTextPayload(
+        headline="A smarter way to read the market",
+        body="Visual support.",
+        cta="Explore more",
+        hashtags=["#Investing"],
+        metadata={
+            "visual_direction": "Premium chart-led finance visual with dashboard tiles.",
+        },
+    )
+
+    prompt = AIOrchestratorService.build_image_prompt(
+        request=request,
+        text_payload=payload,
+        creative_decision=CreativeDecisionPayload(asset_strategy={"use_generated_image": True}),
+    )
+
+    assert "no approved data/content anchors are available" in prompt
+    assert "Strict prohibition: do not render a table, tabular layout, chart, graph" in prompt
+    assert "Use a non-data visual treatment tied to the approved headline/body instead" in prompt

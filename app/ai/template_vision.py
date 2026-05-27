@@ -110,6 +110,32 @@ class TemplateVisionAnalyzer:
                             "      environment: short string,\n"
                             "      abstraction_level: 'literal'|'conceptual'|'symbolic'|'mixed'\n"
                             "   }\n"
+                            "18. page_blueprint: {\n"
+                            "      layout_category: 'cover_or_hero_visual'|'numbered_or_icon_row_list'|'card_callout_grid'|'timeline_or_winding_process_path'|'closing_cta_or_product_surface'|'editorial_explainer',\n"
+                            "      density: 'airy'|'balanced'|'dense',\n"
+                            "      module_counts: {text_block_count:number, headline_block_count:number, support_block_count:number, row_module_count:number, card_module_count:number, icon_count:number, large_visual_count:number, footer_block_count:number, cta_count:number, chart_count:number, table_count:number, logo_count:number},\n"
+                            "      zones: array of {role:string, x:number, y:number, w:number, h:number, description:string},\n"
+                            "      visual_permissions: {chart_or_graph_allowed:boolean, table_allowed:boolean, dashboard_allowed:boolean, metric_tiles_allowed:boolean, cta_allowed:boolean},\n"
+                            "      closing_grammar: 'none'|'subtle_takeaway'|'cta_button'|'product_panel'|'process_end',\n"
+                            "      must_match: array of concise structural constraints\n"
+                            "   }\n"
+                            "19. ocr_structure: {\n"
+                            "      readable_text_blocks:number,\n"
+                            "      headline_text:string,\n"
+                            "      footer_or_legal_present:boolean,\n"
+                            "      logo_text_present:boolean,\n"
+                            "      text_alignment_pattern:string,\n"
+                            "      text_overlap_or_collision_risk:'none'|'low'|'medium'|'high',\n"
+                            "      block_summary: array of {role:string, text_excerpt:string, x:number, y:number, w:number, h:number}\n"
+                            "   }\n"
+                            "20. premium_quality: {\n"
+                            "      overall_score:number,\n"
+                            "      typography_score:number,\n"
+                            "      spacing_score:number,\n"
+                            "      craft_score:number,\n"
+                            "      brand_finish_score:number,\n"
+                            "      weaknesses: array of short strings\n"
+                            "   }\n"
                             "Coordinates MUST be normalized 0 to 1."
                         ),
                     },
@@ -160,6 +186,9 @@ class TemplateVisionAnalyzer:
                 "composition_logic": parsed.get("composition_logic", {}),
                 "visual_craft_dna": parsed.get("visual_craft_dna", {}),
                 "subject_semantics": parsed.get("subject_semantics", {}),
+                "page_blueprint": parsed.get("page_blueprint", {}),
+                "ocr_structure": parsed.get("ocr_structure", {}),
+                "premium_quality": parsed.get("premium_quality", {}),
                 "icons": parsed.get("icons", []),
                 "platform_hints": parsed.get("platform_hints", []),
             }
@@ -257,6 +286,9 @@ class TemplateVisionAnalyzer:
         composition_logic_candidates = [item.get("composition_logic") for item in page_results if isinstance(item.get("composition_logic"), dict)]
         visual_craft_candidates = [item.get("visual_craft_dna") for item in page_results if isinstance(item.get("visual_craft_dna"), dict)]
         subject_semantic_candidates = [item.get("subject_semantics") for item in page_results if isinstance(item.get("subject_semantics"), dict)]
+        page_blueprint_candidates = [item.get("page_blueprint") for item in page_results if isinstance(item.get("page_blueprint"), dict)]
+        ocr_structure_candidates = [item.get("ocr_structure") for item in page_results if isinstance(item.get("ocr_structure"), dict)]
+        premium_quality_candidates = [item.get("premium_quality") for item in page_results if isinstance(item.get("premium_quality"), dict)]
 
         component_motifs: dict[str, Any] = {}
         motif_support: Counter[str] = Counter()
@@ -337,6 +369,27 @@ class TemplateVisionAnalyzer:
                 **cls._merge_mapping_vote(
                     subject_semantic_candidates,
                     keys=["scene_type", "primary_subjects", "domain_cues", "financial_objects", "human_presence", "environment", "abstraction_level"],
+                ),
+            },
+            "page_blueprint": {
+                **(primary.get("page_blueprint") if isinstance(primary.get("page_blueprint"), dict) else {}),
+                **cls._merge_mapping_vote(
+                    page_blueprint_candidates,
+                    keys=["layout_category", "density", "module_counts", "zones", "visual_permissions", "closing_grammar", "must_match"],
+                ),
+            },
+            "ocr_structure": {
+                **(primary.get("ocr_structure") if isinstance(primary.get("ocr_structure"), dict) else {}),
+                **cls._merge_mapping_vote(
+                    ocr_structure_candidates,
+                    keys=["readable_text_blocks", "headline_text", "footer_or_legal_present", "logo_text_present", "text_alignment_pattern", "text_overlap_or_collision_risk", "block_summary"],
+                ),
+            },
+            "premium_quality": {
+                **(primary.get("premium_quality") if isinstance(primary.get("premium_quality"), dict) else {}),
+                **cls._merge_mapping_vote(
+                    premium_quality_candidates,
+                    keys=["overall_score", "typography_score", "spacing_score", "craft_score", "brand_finish_score", "weaknesses"],
                 ),
             },
             "page_analysis_summary": page_summaries,

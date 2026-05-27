@@ -602,6 +602,7 @@ class PromptIntelligenceService:
                 "- static_panel_spec: for static outputs, a single object with keys panel_goal, dominant_message, supporting_lines, proof_points, stat_highlights, visual_focus, and cta_mode",
                 "- static_panel_spec rules: dominant_message should capture the one thing the panel must communicate at a glance, and supporting_lines should stay short enough to preserve one-panel clarity",
                 "- visual_focus rules: provide highly specific, literal premium 2D/3D visual scenes or contextual graphics that directly demonstrate the real-world situation of the slide's content. Do NOT use abstract conceptual metaphors (e.g. avoid vague shields, glowing nodes, chess pieces, or floating jigsaw puzzles). For the first and last slides in particular, specify a strong, attention-grabbing literal hook scene.",
+                "- visual_focus must be a content-specific natural-language visual direction, never a JSON object, storage_path, reference_image handle, asset id, filename, or instruction to use an uploaded reference as the visual idea",
                 "- hook_type: a short persuasion label such as problem-led, benefit-led, proof-led, comparison-led, contrast-led, myth-busting, or question-led",
                 "- objection_handling: short lines that answer likely objections or friction points when the format benefits from them",
                 "- trust_builders: credibility cues, proof cues, or reassurance anchors; keep only the ones that materially strengthen the story",
@@ -624,6 +625,41 @@ class PromptIntelligenceService:
                 "Use claim_evidence_pairs so persuasive claims stay tied to concrete support instead of floating as unsupported benefits.",
                 "Let metadata depth match the requested format, sample pattern, and narrative load instead of forcing the same small list size every time.",
                 "These metadata fields can be richer than the on-canvas text, but they must still stay concise, brand-safe, and usable downstream.",
+            ]
+        )
+
+    @staticmethod
+    def _strategic_content_quality_rule_block() -> str:
+        return " ".join(
+            [
+                "Strategic content quality rules: think like a senior LinkedIn/Instagram campaign strategist and finance-education copy lead, not a mechanical summarizer.",
+                "Every carousel slide must earn its place with a distinct strategic job: hook tension, factual mechanism, hidden/undercovered angle, implication, proof, or closing payoff.",
+                "Do not use sample headings as lazy copy. If the sample says 'Why this matters now' or 'What actually changed', adapt that grammar into topic-specific, audience-facing copy with a concrete angle.",
+                "Headlines must contain the real topic, tension, consequence, audience implication, or decision payoff; avoid generic labels such as key insight, what changed, why it matters, or investment education unless paired with a concrete topic-specific modifier.",
+                "Use verified_facts and user-supplied facts as the only source for exact dates, numbers, percentages, rankings, currency amounts, commitments, tariffs, returns, or regulatory claims.",
+                "If a claim is inferential, phrase it as an implication or what-it-could-mean, not as a confirmed fact.",
+                "Tie each claim_evidence_pair to either a verified fact, a user-supplied fact, or a clearly marked strategic inference.",
+                "Use audience intelligence: choose the lead and payoff based on audience motivations, objections, desired outcomes, trust cues, and platform behavior, not only the topic.",
+                "Use campaign intelligence: align hook_type, objection_handling, trust_builders, CTA, and slide order to the objective_brief and platform_preset.",
+                "For LinkedIn, prefer expert educational tension, strategic implication, and professional clarity over hype or generic motivational copy.",
+                "For Instagram, keep copy more visual, compressed, and emotionally legible while preserving factual accuracy.",
+                "Visual_focus must be as strategic as copy: specify whether the slide needs premium 3D, 2.5D/isometric, flat editorial, dashboard/product surface, chart/module, icon system, document/evidence object, or brand-led visual treatment based on sample visual_craft and brand_visual_brief.",
+                "Hook slides need a strong entry visual; middle slides need section-specific visual systems; final slides need a decisive closing/product/action visual. Do not repeat the same generic document, magnifier, chart, handshake, flag, or business icon motif across slides.",
+                "For visual metadata, avoid generic stock concepts such as professional photo, handshake, generic chart, vague business icon, document pile, magnifying glass, or abstract globe unless the selected sample explicitly uses that motif with premium craft.",
+            ]
+        )
+
+    @staticmethod
+    def _data_visualization_rule_block() -> str:
+        return " ".join(
+            [
+                "Data visualization rules: tables, tabular sections, charts, graphs, dashboards, matrices, comparison grids, timelines, scorecards, and metric modules are content instruments, not decoration.",
+                "Only request a table/chart/graph when it is directly supported by user_prompt, verified_facts, claim_evidence_pairs, proof_points, stat_highlights, body_points, or the active section/slide content.",
+                "If no approved data/content anchors exist, do not request or render any table, tabular layout, chart, graph, dashboard, scorecard, timeline, metric module, fake UI analytics panel, or matrix.",
+                "Every row, column, axis, legend, label, card heading, metric, and comparison bucket must map to the approved content; do not draw generic bars, unlabeled lines, fake axes, random percentages, placeholder dashboards, or abstract finance widgets.",
+                "If exact numeric values, time series, percentages, currency amounts, or rankings are unavailable, do not invent them. When approved qualitative anchors exist, use qualitative comparison cards, process modules, labeled evidence blocks, or a non-numeric matrix instead of numeric charts.",
+                "Choose the right data visual type mechanically: table/matrix for comparisons, bar chart for ranked categories with real values, line chart for time series with real dates, flow/process chart for sequences, scorecard/dashboard modules for qualitative evidence, and callout cards for single proof points.",
+                "For carousel slides, each slide's data visual must serve that slide's story role and match the selected sample's partitioning and density. For static and infographic outputs, the data visual must support the dominant message or section job without becoming unreadable filler.",
             ]
         )
 
@@ -720,6 +756,8 @@ class PromptIntelligenceService:
         )
         content_metadata_schema = self._content_metadata_schema_block()
         persuasion_metadata_rules = self._persuasion_metadata_rule_block()
+        strategic_content_quality_rules = self._strategic_content_quality_rule_block()
+        data_visualization_rules = self._data_visualization_rule_block()
         logo_overlay_rules = self._logo_overlay_rule_block()
         platform_preset = studio_panel.get("platform_preset")
         format_name = studio_panel.get("format")
@@ -746,6 +784,8 @@ class PromptIntelligenceService:
         For carousel outputs, only the final slide spec may contain CTA text. Keep interior slide CTA fields empty.
         When the requested format or sample implies a 5-7 slide sequence, provide enough distinct teaching units to fill that story arc instead of collapsing everything into one numbered-list poster summary.
         Persuasion metadata rules: {persuasion_metadata_rules}
+        Strategic content quality rules: {strategic_content_quality_rules}
+        Data visualization rules: {data_visualization_rules}
         Logo overlay rules: {logo_overlay_rules}
         Brand name: {brand_copy_brief.get("brand_name")}
         Primary tone attributes: {brand_copy_brief.get("tone_attributes", [])}
@@ -898,6 +938,8 @@ class PromptIntelligenceService:
         )
         content_metadata_schema = self._content_metadata_schema_block()
         persuasion_metadata_rules = self._persuasion_metadata_rule_block()
+        strategic_content_quality_rules = self._strategic_content_quality_rule_block()
+        data_visualization_rules = self._data_visualization_rule_block()
         logo_overlay_rules = self._logo_overlay_rule_block()
         platform_preset = studio_panel.get("platform_preset")
         format_name = studio_panel.get("format")
@@ -919,6 +961,8 @@ class PromptIntelligenceService:
         {content_metadata_schema}
         Use empty strings or empty lists when a metadata field is unknown. Never return null for metadata keys.
         Persuasion metadata rules: {persuasion_metadata_rules}
+        Strategic content quality rules: {strategic_content_quality_rules}
+        Data visualization rules: {data_visualization_rules}
         Logo overlay rules: {logo_overlay_rules}
         Creative decision must include:
         - layout_mode
@@ -953,6 +997,8 @@ class PromptIntelligenceService:
         Respect brand guardrails over user prompts.
         For carousel planning, if the format or reference context implies a slide sequence, plan a real multi-slide narrative. Do not compress the concept into one poster body or one generic numbered-list summary.
         If you use numbered or labeled teaching units, each item must be a complete idea line that can stand on its own slide rather than a bare numeric fragment.
+        For carousel planning, every slide headline must be topic-specific. Do not output generic sample grammar such as "Why this matters now", "What actually changed", "Why it matters beyond the headline", "What to do with this insight", "Key insight", or "The takeaway".
+        For carousel planning, every slide visual_focus must be a concise natural-language visual direction tied to the slide's approved content and sample style. Never put a reference_image object, storage_path, filename, uploaded asset id, or unrelated reference title in visual_focus.
         Choose one dominant visual strategy and at most one supporting visual system:
         - image_led
         - template_led

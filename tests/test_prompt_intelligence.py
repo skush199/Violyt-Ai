@@ -78,10 +78,66 @@ def test_generation_envelope_grounds_visual_metadata_from_visual_knowledge_brief
     assert "trust_builders" in combined
     assert "claim_evidence_pairs" in combined
     assert "avoid generic stock concepts such as professional photo, handshake, generic chart" in combined
+    assert "Strategic content quality rules" in combined
+    assert "Do not use sample headings as lazy copy" in combined
+    assert "Use verified_facts and user-supplied facts as the only source" in combined
+    assert "premium 3D, 2.5D/isometric" in combined
     assert "Use hook_type to make the persuasion pattern explicit" in combined
     assert "Clean-looking OCR, specimen, or promotional template copy is not valid primary visual grounding" in combined
     assert "When visual_knowledge_brief.grounding_mode is brand_knowledge" in combined
+
+
+def test_generation_and_planning_envelopes_include_data_visualization_rules() -> None:
+    service = PromptIntelligenceService()
+
+    generation_envelope = service.compose_generation_envelope(
+        user_prompt="Create a LinkedIn infographic with a comparison table about bond yields.",
+        compiled_context={"brand_copy_brief": {"brand_name": "Jiraaf"}},
+        studio_panel={"platform_preset": "linkedin", "format": "infographic", "file_type": "png"},
+    )
+    planning_envelope = service.compose_creative_planning_envelope(
+        user_prompt="Create a LinkedIn carousel with charts about an FTA.",
+        compiled_context={"brand_copy_brief": {"brand_name": "Jiraaf"}},
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+    )
+
+    combined = f"{generation_envelope.system}\n{planning_envelope.system}"
+
+    assert "Data visualization rules" in combined
+    assert "tables, tabular sections, charts, graphs, dashboards" in combined
+    assert "If no approved data/content anchors exist, do not request or render any table" in combined
+    assert "do not draw generic bars, unlabeled lines, fake axes" in combined
+    assert "If exact numeric values, time series, percentages, currency amounts, or rankings are unavailable" in combined
     assert "When visual_knowledge_brief.grounding_mode is llm_fallback" in combined
+
+
+def test_creative_planning_envelope_rejects_generic_carousel_headings_and_reference_visual_focus_objects() -> None:
+    service = PromptIntelligenceService()
+
+    envelope = service.compose_creative_planning_envelope(
+        user_prompt="Write a LinkedIn carousel for Jiraaf on the India-New Zealand FTA signed on 27 April 2026.",
+        compiled_context={
+            "brand_copy_brief": {"brand_name": "Jiraaf"},
+            "brand_visual_brief": {},
+            "audience_brief": {},
+            "objective_brief": {},
+            "knowledge_brief": [],
+            "prompt_intelligence_brief": {},
+            "visual_knowledge_brief": {},
+            "render_constraints": {},
+            "session_brief": {},
+            "template_fit_brief": {"template_name": "FTA (3)"},
+            "reference_asset_brief": [],
+        },
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+    )
+
+    combined = f"{envelope.system}\n{envelope.user}"
+
+    assert "every slide headline must be topic-specific" in combined
+    assert "Why this matters now" in combined
+    assert "every slide visual_focus must be a concise natural-language visual direction" in combined
+    assert "Never put a reference_image object, storage_path" in combined
 
 
 def test_creative_planning_envelope_uses_visual_knowledge_brief() -> None:
@@ -193,9 +249,9 @@ def test_creative_planning_envelope_includes_brand_design_system_guidance() -> N
 
     combined = f"{envelope.system}\n{envelope.user}"
 
-    assert "Use brand_visual_brief.dominant_layout_family and preferred_zone_roles" in combined
-    assert "Use brand_visual_brief.hierarchy_summary to decide the focal path and spacing rhythm." in combined
-    assert "Use brand_visual_brief.content_structure_summary to decide whether the piece should read like a single-claim story, comparison, steps, benefit stack, or data story." in combined
+    assert "Use brand_visual_brief.dominant_layout_family, preferred_zone_roles" in combined
+    assert "Use brand_visual_brief.hierarchy_summary to shape focal path, spacing rhythm, and density/whitespace." in combined
+    assert "Use brand_visual_brief.content_structure_summary to decide whether the composition should read like a single-claim, comparison, steps, benefit-stack, or data-story visual." in combined
     assert "Use brand_visual_brief.logo_position and background_style_summary" in combined
     assert "Use brand_visual_brief.image_treatment_summary to avoid generic portraits" in combined
 

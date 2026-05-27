@@ -11,6 +11,7 @@ from reportlab.pdfgen import canvas as pdf_canvas
 from app.models.content import ContentVersion, GeneratedAsset
 from app.models.knowledge import KnowledgeAsset
 from app.models.knowledge import TemplateMetadata
+from app.ai.layout_decision import LayoutDecision
 from app.schemas.content import ToneCheckRequest
 from app.services.content import ContentService
 
@@ -65,6 +66,111 @@ def test_tone_check_request_accepts_version_or_structured_payload_without_raw_co
 def test_tone_check_request_requires_content_or_equivalent_source() -> None:
     with pytest.raises(ValidationError, match="Provide content, content_payload, or content_version_id"):
         ToneCheckRequest()
+
+
+def test_template_context_ignores_semantically_conflicting_layout_dna_for_selected_carousel() -> None:
+    template_meta = SimpleNamespace(
+        zone_map={
+            "zones": [{"role": "headline", "x": 0.05, "y": 0.01, "w": 0.7, "h": 0.12}],
+            "editorial_dna": {
+                "headline_patterns": ["Bond Market", "See the bond market the way professionals do"],
+            },
+            "subject_semantics": {
+                "primary_subjects": ["bond market", "yield curves", "government spreads"],
+            },
+        },
+        sizing_rules={"page_count": 4},
+        platform_rules={},
+        editable_fields=["headline", "body", "image"],
+        export_rules={"supported_formats": ["png"]},
+    )
+
+    context = ContentService._build_template_context_payload(
+        prompt="Write a LinkedIn carousel on the India-New Zealand FTA.",
+        template_meta=template_meta,
+        selected_template_id="fta-template-id",
+        selected_template_name="FTA (3)",
+        template_recommendations=[
+            {
+                "template_id": "fta-template-id",
+                "name": "FTA (3)",
+                "metadata": {
+                    "format_family": "carousel",
+                    "page_count": 4,
+                    "summary": "India New Zealand free trade agreement tariff investment mobility",
+                },
+            }
+        ],
+        reference_assets=[
+            {
+                "storage_path": "reference_creatives/FTA-3.pdf",
+                "mime_type": "application/pdf",
+                "metadata": {
+                    "label": "FTA (3)",
+                    "summary": "India New Zealand trade agreement zero duty investment students visas",
+                    "format_family": "carousel",
+                    "page_count": 4,
+                },
+            }
+        ],
+        studio_panel={"format": "carousel", "platform_preset": "linkedin", "file_type": "png"},
+    )
+
+    assert context is not None
+    assert context["sample_metadata_status"] == "template_layout_context_ignored_due_to_semantic_mismatch"
+    assert "editorial_dna" not in context
+    assert "subject_semantics" not in context
+    assert "zone_map" not in context
+    assert context["sequence_pack"]["selected_template_name"] == "FTA (3)"
+    assert not (context["sequence_pack"]["slides"][0].get("zone_map") or {}).get("zones")
+
+
+def test_template_context_uses_prompt_evidence_when_selected_sample_metadata_is_thin() -> None:
+    template_meta = SimpleNamespace(
+        zone_map={
+            "zones": [{"role": "image", "x": 0.11, "y": 0.2, "w": 0.14, "h": 0.14}],
+            "editorial_dna": {
+                "headline_patterns": ["Bond Market", "See the bond market the way professionals do"],
+            },
+            "subject_semantics": {
+                "primary_subjects": ["bond market", "yield curves", "government spreads"],
+                "financial_objects": ["bonds", "line graphs", "spreads"],
+            },
+        },
+        sizing_rules={"page_count": 4},
+        platform_rules={},
+        editable_fields=["headline", "body", "image"],
+        export_rules={"supported_formats": ["png"]},
+    )
+
+    context = ContentService._build_template_context_payload(
+        prompt="Write a LinkedIn carousel for Jiraaf on the India-New Zealand FTA signed on 27 April 2026.",
+        template_meta=template_meta,
+        selected_template_id="fta-template-id",
+        selected_template_name="FTA (3)",
+        template_recommendations=[
+            {
+                "template_id": "fta-template-id",
+                "name": "FTA (3)",
+                "metadata": {"format_family": "carousel", "page_count": 4},
+            }
+        ],
+        reference_assets=[
+            {
+                "storage_path": "reference_creatives/FTA-3-7af041a72ab6483e8dee0fb827a4fd9d.pdf",
+                "mime_type": "application/pdf",
+                "metadata": {"label": "FTA (3)", "format_family": "carousel", "page_count": 4},
+            }
+        ],
+        studio_panel={"format": "carousel", "platform_preset": "linkedin", "file_type": "png"},
+    )
+
+    assert context is not None
+    assert context["sample_metadata_status"] == "template_layout_context_ignored_due_to_semantic_mismatch"
+    assert "editorial_dna" not in context
+    assert "subject_semantics" not in context
+    assert "zone_map" not in context
+    assert context["sequence_pack"]["selected_template_name"] == "FTA (3)"
 
 
 def test_rewrite_compiled_context_reuses_stored_guide_aware_context() -> None:
@@ -188,6 +294,36 @@ def test_rebalance_sequence_pack_story_roles_adds_editorial_progression() -> Non
     ]
     assert rebalanced[0]["structural_cues"] == ["cover hook"]
     assert rebalanced[-1]["structural_cues"] == ["takeaway close"]
+
+
+def test_apply_template_context_surface_policy_to_planning_hints_marks_style_reference_only() -> None:
+    planning_hints = {
+        "mode": "adapted_template",
+        "asset_strategy": {
+            "use_template_background": True,
+            "use_generated_image": True,
+            "use_brand_reference_assets": True,
+        },
+    }
+    template_context = {
+        "sequence_pack": {
+            "surface_policy": "style_reference_only",
+            "slide_count": 7,
+            "slides": [{"slide_index": 1, "reference_asset_path": "tenant/reference/sample-1.png"}],
+        }
+    }
+
+    updated = ContentService._apply_template_context_surface_policy_to_planning_hints(
+        planning_hints,
+        template_context,
+        {"format": "carousel"},
+    )
+
+    assert updated["template_surface_policy"] == "style_reference_only"
+    assert updated["asset_strategy"]["template_surface_policy"] == "style_reference_only"
+    assert updated["asset_strategy"]["use_template_background"] is False
+    assert updated["asset_strategy"]["use_generated_image"] is True
+    assert updated["asset_strategy"]["supporting_visual_system"] == "reference_assets"
 
 
 def test_repair_rewrite_payload_preserves_non_targeted_carousel_slides() -> None:
@@ -660,6 +796,54 @@ def test_should_use_ai_final_render_overlay_when_exact_text_contract_exists() ->
         [carousel_asset],
     ) is False
 
+    carousel_overlay_asset = GeneratedAsset(
+        id=uuid4(),
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        content_version_id=uuid4(),
+        asset_role="render_preview",
+        mime_type="image/png",
+        storage_path="tenant/brand/generated/final-render-slide-2.png",
+        width=1080,
+        height=1080,
+        metadata_json={
+            "render_source": "ai",
+            "generation_stage": "final_render",
+            "render_overlay_scene_graph": {
+                "canvas": {"width": 1080, "height": 1080, "platform": "linkedin"},
+                "elements": [
+                    {"element_id": "headline_text_slide_2", "element_type": "text", "role": "headline", "geometry": {"x": 0.08, "y": 0.1, "width": 0.6, "height": 0.16}},
+                    {"element_id": "body_text_slide_2", "element_type": "text", "role": "body", "geometry": {"x": 0.08, "y": 0.3, "width": 0.52, "height": 0.2}},
+                ],
+            },
+            "render_overlay_text": {"headline": "Slide headline", "body": "Slide body", "cta": "Explore", "hashtags": [], "metadata": {}},
+        },
+    )
+    assert ContentService._should_use_ai_final_render_overlay_for_panel(
+        {"format": "carousel", "file_type": "png"},
+        [carousel_overlay_asset],
+    ) is True
+
+
+def test_sequence_pack_relevance_filter_rejects_irrelevant_family_for_prompt() -> None:
+    sequence_pack = {
+        "family_name": "FLOATING-RATE-BONDS",
+        "selected_template_name": "Floating-Rate-Bonds-5",
+        "slides": [
+            {"slide_index": 1, "template_name": "Floating-Rate-Bonds-1"},
+            {"slide_index": 2, "template_name": "Floating-Rate-Bonds-2"},
+        ],
+    }
+
+    assert ContentService._sequence_pack_is_relevant_to_prompt(
+        "Create a 5-slide carousel on retirement planning mistakes.",
+        sequence_pack,
+    ) is False
+    assert ContentService._sequence_pack_is_relevant_to_prompt(
+        "Create a 5-slide carousel on floating rate bond strategies.",
+        sequence_pack,
+    ) is True
+
 
 def test_knowledge_channels_for_social_png_excludes_template_ocr() -> None:
     channels = ContentService._knowledge_channels_for_panel(
@@ -1059,6 +1243,7 @@ def test_build_template_context_payload_prefers_selected_template_explicit_seque
 
 def test_build_template_context_payload_keeps_selected_template_authority_when_unrelated_family_has_richer_sequence_metadata() -> None:
     payload = ContentService._build_template_context_payload(
+        prompt="Create a 5-slide LinkedIn carousel on retirement planning mistakes.",
         template_meta=SimpleNamespace(
             zone_map={"layout_type": "template", "zones": [{"zone_id": "headline", "role": "headline"}]},
             sizing_rules={},
@@ -1129,6 +1314,119 @@ def test_build_template_context_payload_keeps_selected_template_authority_when_u
     assert payload["sequence_pack"]["slide_count"] == 5
     assert all(slide["template_name"] == "06.01.2026" for slide in payload["sequence_pack"]["slides"])
     assert payload["sequence_pack"]["family_name"] != "FLOATING-RATE-BONDS"
+
+
+def test_build_template_context_payload_keeps_selected_template_authority_pack_even_when_prompt_topic_differs_from_template_title() -> None:
+    payload = ContentService._build_template_context_payload(
+        prompt="Write a LinkedIn carousel for Jiraaf on the India-New Zealand Free Trade Agreement signed on 27 April 2026.",
+        template_meta=SimpleNamespace(
+            zone_map={"layout_type": "template", "zones": [{"zone_id": "headline", "role": "headline"}]},
+            sizing_rules={},
+            platform_rules={},
+            editable_fields=["headline", "body", "image"],
+            export_rules={},
+        ),
+        selected_template_id="selected-template-id",
+        selected_template_name="Behavioural Biases",
+        template_recommendations=[
+            {
+                "template_id": "selected-template-id",
+                "name": "Behavioural Biases",
+                "asset_url": "tenant/reference/Behavioural-Biases.pdf",
+                "metadata": {
+                    "page_count": 7,
+                    "format_family": "carousel",
+                    "summary": "Investor bias explainer with a 7-slide paginated structure.",
+                },
+            }
+        ],
+        reference_assets=[
+            {
+                "asset_role": "reference_creative",
+                "storage_path": "tenant/reference/FTA-3.pdf",
+                "mime_type": "application/pdf",
+                "metadata": {
+                    "format_family": "carousel",
+                    "sequence_family": "FTA",
+                    "reference_slide_index": 3,
+                    "summary": "NZ opened 100% of tariff lines and relaxed mobility caps for Indian students.",
+                },
+            }
+        ],
+        studio_panel={"format": "carousel", "platform_preset": "linkedin", "file_type": "png"},
+    )
+
+    assert payload is not None
+    assert payload["sequence_pack"]["selected_template_id"] == "selected-template-id"
+    assert payload["sequence_pack"]["selected_template_name"] == "Behavioural Biases"
+    assert payload["sequence_pack"]["slide_count"] == 7
+    assert all(slide["template_name"] == "Behavioural Biases" for slide in payload["sequence_pack"]["slides"])
+
+
+def test_build_template_context_payload_prefers_carousel_capable_references_over_single_page_static_samples() -> None:
+    payload = ContentService._build_template_context_payload(
+        prompt="Create a 5-slide LinkedIn carousel on retirement planning mistakes.",
+        template_meta=SimpleNamespace(
+            zone_map={"layout_type": "template", "zones": [{"zone_id": "headline", "role": "headline"}]},
+            sizing_rules={},
+            platform_rules={},
+            editable_fields=["headline", "body", "image"],
+            export_rules={},
+        ),
+        selected_template_id=None,
+        selected_template_name=None,
+        template_recommendations=[
+            {
+                "template_id": "frb-1",
+                "name": "Floating-Rate-Bonds-1",
+                "metadata": {"label": "Floating Rate Bonds 1", "page_count": 1},
+            },
+            {
+                "template_id": "frb-2",
+                "name": "Floating-Rate-Bonds-2",
+                "metadata": {"label": "Floating Rate Bonds 2", "page_count": 1},
+            },
+            {
+                "template_id": "frb-3",
+                "name": "Floating-Rate-Bonds-3",
+                "metadata": {"label": "Floating Rate Bonds 3", "page_count": 1},
+            },
+        ],
+        reference_assets=[
+            {
+                "asset_role": "reference_creative",
+                "storage_path": "tenant/reference_creatives/Retirement-Arc-1-sample.pdf",
+                "metadata": {
+                    "label": "Retirement Arc",
+                    "family_name": "RETIREMENT-ARC",
+                    "page_count": 5,
+                    "structural_cues": [
+                        "cover hook",
+                        "mistake setup",
+                        "what it costs",
+                        "what to do instead",
+                        "takeaway close",
+                    ],
+                    "summary": "Retirement planning carousel with slide-by-slide storytelling.",
+                },
+            },
+            {
+                "asset_role": "reference_creative",
+                "storage_path": "tenant/reference_creatives/Floating-Rate-Bonds-1-sample.jpg",
+                "metadata": {"label": "Floating Rate Bonds 1", "page_count": 1},
+            },
+        ],
+        studio_panel={"format": "carousel", "platform_preset": "linkedin", "file_type": "png"},
+    )
+
+    assert payload is not None
+    assert payload["sequence_pack"]["family_name"] == "RETIREMENT-ARC"
+    assert payload["sequence_pack"]["slide_count"] == 5
+    assert payload["sequence_pack"]["slides"][0]["reference_asset_path"].endswith(".pdf")
+    assert all(
+        "FLOATING-RATE-BONDS" not in str(slide.get("template_name") or "")
+        for slide in payload["sequence_pack"]["slides"]
+    )
 
 
 def test_build_selected_template_authority_sequence_pack_uses_matching_asset_page_count_when_available() -> None:
@@ -1347,6 +1645,78 @@ def test_knowledge_asset_payload_preserves_asset_role_from_metadata() -> None:
     assert payload["trust_level"] == "trusted"
 
 
+def test_knowledge_asset_payload_enriches_reference_format_family_and_sequence_signature() -> None:
+    asset = KnowledgeAsset(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        name="Floating Rate Bonds 5",
+        original_filename="Floating-Rate-Bonds-5.png",
+        mime_type="image/png",
+        storage_path="tenant/brand/reference/Floating-Rate-Bonds-5-abcd1234.png",
+        lifecycle_state="indexed",
+        channel="reference_creative",
+        page_count=1,
+        metadata_json={
+            "asset_role": "reference_creative",
+            "summary": "Layout marketing_social. Background flat. Editable zones: headline, logo, image, body.",
+        },
+        structured_data_json={},
+        normalized_data_json={},
+        validation_state="clean",
+    )
+
+    payload = ContentService._knowledge_asset_payload(asset)
+
+    assert payload["format_family"] == "carousel"
+    assert payload["metadata"]["format_family"] == "carousel"
+    assert payload["metadata"]["sequence_family"] == "FLOATING-RATE-BONDS"
+    assert payload["metadata"]["reference_slide_index"] == 5
+
+
+def test_filter_reference_assets_for_studio_format_prefers_enriched_carousel_assets() -> None:
+    assets = [
+        {
+            "asset_id": str(uuid4()),
+            "asset_role": "reference_creative",
+            "mime_type": "image/png",
+            "storage_path": "tenant/reference/WhatsApp-Image-2026-04-21.jpeg",
+            "metadata": {
+                "summary": "Layout infographic. Background flat. Editable zones: logo, headline, body, image.",
+                "page_count": 1,
+            },
+        },
+        {
+            "asset_id": str(uuid4()),
+            "asset_role": "reference_creative",
+            "mime_type": "image/png",
+            "storage_path": "tenant/reference/Floating-Rate-Bonds-5-abcd1234.png",
+            "metadata": {
+                "summary": "Layout marketing_social. Background flat. Editable zones: headline, logo, image, body.",
+                "page_count": 1,
+            },
+        },
+        {
+            "asset_id": str(uuid4()),
+            "asset_role": "reference_creative",
+            "mime_type": "application/pdf",
+            "storage_path": "tenant/reference/Bond-Analyzer.pdf",
+            "metadata": {
+                "summary": "Bond market explainer carousel.",
+                "page_count": 5,
+            },
+        },
+    ]
+
+    filtered = ContentService._filter_reference_assets_for_studio_format(
+        assets,
+        studio_panel={"format": "carousel"},
+    )
+
+    assert filtered
+    assert all(str(item.get("format_family") or "") == "carousel" for item in filtered)
+    assert not any("WhatsApp-Image" in str(item.get("storage_path") or "") for item in filtered)
+
+
 def test_selected_reference_visual_assets_materializes_trace_assets_for_export() -> None:
     assets = ContentService._selected_reference_visual_assets(
         {
@@ -1493,6 +1863,7 @@ def test_filter_template_recommendations_for_prompt_drops_off_topic_named_templa
         recommendations,
         prompt="Create an engaging Instagram post that shares tips and strategies to book flights at a lower cost",
         follow_up_mode="new_content",
+        studio_panel={"format": "static"},
     )
 
     names = [str(item["name"]) for item in filtered]
@@ -1500,6 +1871,244 @@ def test_filter_template_recommendations_for_prompt_drops_off_topic_named_templa
     assert "FD to bonds-04" not in names
     assert "IMG_3022" in names
     assert "Travel fares editorial" in names
+
+
+def test_filter_template_recommendations_for_prompt_prefers_static_family_for_static_generation() -> None:
+    recommendations = [
+        {"name": "Static hero", "score": 8.5, "metadata": {"format_family": "static", "adaptation_score": 18.5}},
+        {"name": "Carousel story", "score": 9.9, "metadata": {"format_family": "carousel", "adaptation_score": 9.9}},
+        {"name": "Infographic board", "score": 9.2, "metadata": {"format_family": "infographic", "adaptation_score": 9.2}},
+    ]
+
+    filtered = ContentService._filter_template_recommendations_for_prompt(
+        recommendations,
+        prompt="Create a static LinkedIn post about retirement planning mistakes",
+        follow_up_mode="new_content",
+        studio_panel={"format": "static"},
+    )
+
+    assert [item["name"] for item in filtered] == ["Static hero"]
+
+
+def test_filter_template_recommendations_for_prompt_prefers_infographic_family_for_infographic_generation() -> None:
+    recommendations = [
+        {"name": "Infographic board", "score": 8.4, "metadata": {"format_family": "infographic", "adaptation_score": 18.4}},
+        {"name": "Static card", "score": 9.5, "metadata": {"format_family": "static", "adaptation_score": 9.5}},
+        {"name": "Carousel story", "score": 9.6, "metadata": {"format_family": "carousel", "adaptation_score": 9.6}},
+    ]
+
+    filtered = ContentService._filter_template_recommendations_for_prompt(
+        recommendations,
+        prompt="Create an infographic on retirement planning mistakes",
+        follow_up_mode="new_content",
+        studio_panel={"format": "infographic"},
+    )
+
+    assert [item["name"] for item in filtered] == ["Infographic board"]
+
+
+def test_filter_template_recommendations_for_prompt_prefers_carousel_family_for_carousel_generation() -> None:
+    recommendations = [
+        {"name": "Static card", "score": 9.6, "metadata": {"format_family": "static", "adaptation_score": 9.6}},
+        {"name": "Carousel family A", "score": 8.9, "metadata": {"format_family": "carousel", "adaptation_score": 18.9}},
+        {"name": "Carousel family B", "score": 8.7, "metadata": {"format_family": "carousel", "adaptation_score": 17.2}},
+    ]
+
+    filtered = ContentService._filter_template_recommendations_for_prompt(
+        recommendations,
+        prompt="Create a 5-slide carousel on retirement planning mistakes",
+        follow_up_mode="new_content",
+        studio_panel={"format": "carousel"},
+    )
+
+    assert [item["name"] for item in filtered] == ["Carousel family A", "Carousel family B"]
+
+
+def test_sort_template_recommendations_for_format_places_best_adapting_candidate_first() -> None:
+    recommendations = [
+        {"name": "Carousel topic match", "score": 8.0, "metadata": {"format_family": "carousel", "adaptation_score": 21.0}},
+        {"name": "Static stronger raw score", "score": 9.7, "metadata": {"format_family": "static", "adaptation_score": 9.7}},
+        {"name": "Carousel weaker adaptation", "score": 8.4, "metadata": {"format_family": "carousel", "adaptation_score": 18.0}},
+    ]
+
+    ranked = ContentService._sort_template_recommendations_for_format(
+        recommendations,
+        studio_panel={"format": "carousel"},
+    )
+
+    assert [item["name"] for item in ranked] == [
+        "Carousel topic match",
+        "Carousel weaker adaptation",
+        "Static stronger raw score",
+    ]
+
+
+def test_sort_template_recommendations_for_format_keeps_exact_family_ahead_of_mismatched_uploaded_sample() -> None:
+    recommendations = [
+        {
+            "name": "Uploaded static sample",
+            "score": 100.0,
+            "match_type": "adapted_template",
+            "metadata": {"format_family": "static", "adaptation_score": 200.0},
+            "source": "request_reference_asset",
+        },
+        {
+            "name": "Carousel family anchor",
+            "score": 8.8,
+            "match_type": "adapted_template",
+            "metadata": {"format_family": "carousel", "adaptation_score": 22.8},
+        },
+    ]
+
+    ranked = ContentService._sort_template_recommendations_for_format(
+        recommendations,
+        studio_panel={"format": "carousel"},
+    )
+
+    assert [item["name"] for item in ranked] == [
+        "Carousel family anchor",
+        "Uploaded static sample",
+    ]
+
+
+def test_collapse_carousel_template_recommendations_groups_same_family() -> None:
+    recommendations = [
+        {
+            "template_id": str(uuid4()),
+            "name": "Retirement-Planning-2",
+            "display_name": "Retirement Planning",
+            "score": 8.9,
+            "format_family": "carousel",
+            "recommendation_group_key": "RETIREMENT-PLANNING",
+            "metadata": {
+                "format_family": "carousel",
+                "adaptation_score": 21.0,
+                "sequence_family": "RETIREMENT-PLANNING",
+                "sequence_position": 2,
+                "family_display_name": "Retirement Planning",
+            },
+        },
+        {
+            "template_id": str(uuid4()),
+            "name": "Retirement-Planning-1",
+            "display_name": "Retirement Planning",
+            "score": 9.1,
+            "format_family": "carousel",
+            "recommendation_group_key": "RETIREMENT-PLANNING",
+            "metadata": {
+                "format_family": "carousel",
+                "adaptation_score": 22.0,
+                "sequence_family": "RETIREMENT-PLANNING",
+                "sequence_position": 1,
+                "family_display_name": "Retirement Planning",
+            },
+        },
+        {
+            "template_id": str(uuid4()),
+            "name": "Bond-Mistakes-1",
+            "display_name": "Bond Mistakes",
+            "score": 8.0,
+            "format_family": "carousel",
+            "recommendation_group_key": "BOND-MISTAKES",
+            "metadata": {
+                "format_family": "carousel",
+                "adaptation_score": 18.0,
+                "sequence_family": "BOND-MISTAKES",
+                "sequence_position": 1,
+                "family_display_name": "Bond Mistakes",
+            },
+        },
+    ]
+
+    collapsed = ContentService._collapse_carousel_template_recommendations(
+        recommendations,
+        studio_panel={"format": "carousel"},
+    )
+
+    assert [item["display_name"] for item in collapsed] == ["Retirement Planning", "Bond Mistakes"]
+    assert collapsed[0]["metadata"]["family_member_count"] == 2
+    assert collapsed[0]["metadata"]["group_type"] == "carousel_family"
+
+
+def test_annotate_template_recommendation_selection_marks_primary_and_reason() -> None:
+    recommendations = [
+        {
+            "template_id": str(uuid4()),
+            "name": "Retirement-Planning-1",
+            "display_name": "Retirement Planning",
+            "format_family": "carousel",
+            "metadata": {"format_family": "carousel"},
+        },
+        {
+            "template_id": str(uuid4()),
+            "name": "Bond-Mistakes-1",
+            "display_name": "Bond Mistakes",
+            "format_family": "carousel",
+            "metadata": {"format_family": "carousel"},
+        },
+    ]
+
+    annotated = ContentService._annotate_template_recommendation_selection(
+        recommendations,
+        studio_panel={"format": "carousel"},
+    )
+
+    assert annotated[0]["is_primary_adaptation"] is True
+    assert annotated[0]["selection_reason"] == "Best Adaptation"
+    assert annotated[1]["is_primary_adaptation"] is False
+    assert annotated[1]["selection_reason"] == "Carousel Match"
+
+
+@pytest.mark.asyncio
+async def test_resolve_generation_decision_records_primary_adaptation_alignment() -> None:
+    service = ContentService.__new__(ContentService)
+    service.layout_decision = SimpleNamespace(
+        decide=lambda **kwargs: LayoutDecision(
+            mode="adapted_template",
+            template_id="11111111-1111-1111-1111-111111111111",
+            template_name="Retirement Planning",
+            rationale=["Use the strongest carousel family anchor."],
+            score_breakdown={},
+            adaptation_plan={},
+            brand_rule_hints={},
+            asset_strategy={},
+            review_flags=[],
+        )
+    )
+
+    decision = await service._resolve_generation_decision(
+        prompt="Create a 5-slide carousel on retirement planning mistakes",
+        studio_panel={"format": "carousel", "platform_preset": "linkedin", "file_type": "png"},
+        brand_context={},
+        persona_context={},
+        objective_context={},
+        template_recommendations=[
+            {
+                "template_id": "11111111-1111-1111-1111-111111111111",
+                "name": "Retirement Planning",
+                "display_name": "Retirement Planning",
+                "format_family": "carousel",
+                "is_primary_adaptation": True,
+                "selection_reason": "Best Adaptation",
+            },
+            {
+                "template_id": "22222222-2222-2222-2222-222222222222",
+                "name": "Bond Mistakes",
+                "display_name": "Bond Mistakes",
+                "format_family": "carousel",
+                "is_primary_adaptation": False,
+                "selection_reason": "Carousel Match",
+            },
+        ],
+        selected_template_id=None,
+        selected_template_name=None,
+        reference_assets=[],
+    )
+
+    assert decision["primary_adaptation_template_id"] == "11111111-1111-1111-1111-111111111111"
+    assert decision["primary_adaptation_template_name"] == "Retirement Planning"
+    assert decision["primary_adaptation_selection_reason"] == "Best Adaptation"
+    assert decision["primary_adaptation_matches_selected_template"] is True
 
 
 def test_resolve_generation_selection_ids_ignores_inherited_ids_for_new_content() -> None:

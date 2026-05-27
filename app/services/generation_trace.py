@@ -848,9 +848,14 @@ class GenerationTraceService:
                 {
                     "template_id": str(item.get("template_id") or ""),
                     "name": str(item.get("name") or ""),
+                    "display_name": str(item.get("display_name") or ""),
                     "score": item.get("score"),
                     "match_type": str(item.get("match_type") or ""),
                     "decision_confidence": item.get("decision_confidence"),
+                    "format_family": str(item.get("format_family") or ""),
+                    "is_primary_adaptation": bool(item.get("is_primary_adaptation")),
+                    "selection_reason": str(item.get("selection_reason") or ""),
+                    "recommendation_group_key": str(item.get("recommendation_group_key") or ""),
                     "reasons": item.get("reasons") if isinstance(item.get("reasons"), list) else [],
                 }
                 for item in template_candidates[:5]

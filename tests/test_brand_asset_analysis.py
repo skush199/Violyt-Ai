@@ -9,7 +9,8 @@ from app.ai.template_vision import TemplateVisionAnalyzer
 
 def test_brand_asset_analyzer_selects_cover_dense_and_cta_pages() -> None:
     analyzer = BrandAssetAnalyzer.__new__(BrandAssetAnalyzer)
-    workspace = Path(mkdtemp(prefix="brand-analysis-", dir="C:\\tmp"))
+    workspace = Path("storage") / "_test_artifacts" / "brand_analysis" / Path(mkdtemp()).name
+    workspace.mkdir(parents=True, exist_ok=True)
 
     try:
         images = []
@@ -82,6 +83,9 @@ def test_template_vision_analyze_pages_merges_partial_page_results() -> None:
                     "content_structure": {"storytelling": "benefit stack", "cta_prominence": "measured"},
                     "image_treatment": {"style": "diagram led"},
                     "brand_cues": {"tone_keywords": ["trustworthy"]},
+                    "page_blueprint": {"layout_category": "cover_or_hero_visual", "module_counts": {"text_block_count": 2}},
+                    "ocr_structure": {"readable_text_blocks": 2},
+                    "premium_quality": {"overall_score": 0.86},
                 },
                 "page-2": {
                     "background_style": {"type": "gradient", "description": "deep blue gradient"},
@@ -92,6 +96,9 @@ def test_template_vision_analyze_pages_merges_partial_page_results() -> None:
                     "content_structure": {"storytelling": "data story", "cta_prominence": "subtle"},
                     "image_treatment": {"style": "editorial illustration"},
                     "brand_cues": {"trust_markers": ["data cues"]},
+                    "page_blueprint": {"layout_category": "card_callout_grid", "module_counts": {"card_module_count": 3}},
+                    "ocr_structure": {"readable_text_blocks": 5},
+                    "premium_quality": {"overall_score": 0.9},
                 },
                 "page-3": None,
             }
@@ -120,3 +127,6 @@ def test_template_vision_analyze_pages_merges_partial_page_results() -> None:
     assert merged["visual_hierarchy"]["focal_role"] in {"headline", "proof_module"}
     assert merged["content_structure"]["cta_prominence"] in {"measured", "subtle"}
     assert merged["image_treatment"]["style"] in {"diagram led", "editorial illustration"}
+    assert merged["page_blueprint"]["layout_category"] in {"cover_or_hero_visual", "card_callout_grid"}
+    assert merged["ocr_structure"]["readable_text_blocks"] == 3.5
+    assert merged["premium_quality"]["overall_score"] in {0.86, 0.9}

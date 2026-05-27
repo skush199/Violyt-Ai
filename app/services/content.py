@@ -290,6 +290,252 @@ class ContentService:
         return terms
 
     @classmethod
+    def _sequence_pack_relevance_tokens(cls, value: object) -> set[str]:
+        tokens: set[str] = set()
+        text = re.sub(r"[^a-z0-9]+", " ", str(value or "").casefold())
+        high_signal_short_tokens = {
+            "aum",
+            "cpi",
+            "emi",
+            "fta",
+            "gdp",
+            "gst",
+            "inr",
+            "ipo",
+            "irr",
+            "mom",
+            "npa",
+            "nps",
+            "rbi",
+            "roi",
+            "sip",
+            "usd",
+            "xirr",
+            "yoy",
+            "ytd",
+        }
+        generic_tokens = cls.TOPIC_STOPWORDS | {
+            "adapted",
+            "asset",
+            "authority",
+            "blueprint",
+            "card",
+            "carousel",
+            "creative",
+            "detail",
+            "family",
+            "finance",
+            "financial",
+            "flow",
+            "guide",
+            "headline",
+            "hook",
+            "image",
+            "illustration",
+            "investing",
+            "investment",
+            "investor",
+            "layout",
+            "logo",
+            "mistake",
+            "mistakes",
+            "page",
+            "panel",
+            "planning",
+            "reference",
+            "sequence",
+            "slide",
+            "slides",
+            "story",
+            "structure",
+            "style",
+            "takeaway",
+            "template",
+            "visual",
+        }
+        for raw_token in text.split():
+            token = raw_token.strip()
+            if token.endswith("s") and len(token) > 4:
+                token = token[:-1]
+            if (
+                (len(token) >= 4 or token in high_signal_short_tokens)
+                and token not in generic_tokens
+                and not token.isdigit()
+            ):
+                tokens.add(token)
+        return tokens
+
+    @classmethod
+    def _sequence_pack_is_relevant_to_prompt(
+        cls,
+        prompt: str | None,
+        sequence_pack: dict[str, Any] | None,
+    ) -> bool:
+        if not isinstance(sequence_pack, dict):
+            return False
+        prompt_tokens = set(cls._topic_query_terms(str(prompt or ""), limit=8))
+        if not prompt_tokens:
+            return True
+        pack_tokens: set[str] = set()
+        pack_tokens.update(cls._sequence_pack_relevance_tokens(sequence_pack.get("family_name")))
+        pack_tokens.update(cls._sequence_pack_relevance_tokens(sequence_pack.get("selected_template_name")))
+        for slide in [dict(item) for item in sequence_pack.get("slides", []) if isinstance(item, dict)]:
+            pack_tokens.update(cls._sequence_pack_relevance_tokens(slide.get("template_name")))
+            pack_tokens.update(cls._sequence_pack_relevance_tokens(slide.get("headline_hint")))
+            pack_tokens.update(cls._sequence_pack_relevance_tokens(slide.get("reference_asset_path")))
+        if not pack_tokens:
+            return True
+        return bool(prompt_tokens.intersection(pack_tokens))
+
+    @classmethod
+    def _selected_template_context_evidence_texts(
+        cls,
+        *,
+        prompt: str | None = None,
+        selected_template_name: str | None,
+        selected_template_id: str | None,
+        template_recommendations: list[dict[str, Any]],
+        reference_assets: list[dict[str, Any]],
+    ) -> list[str]:
+        selected_name_key = str(selected_template_name or "").strip().casefold()
+        selected_id = str(selected_template_id or "").strip()
+        selected_signature = cls._sequence_pack_signature(selected_template_name)
+        evidence: list[str] = [
+            str(prompt or "").strip(),
+            str(selected_template_name or "").strip(),
+        ]
+
+        def _append_metadata_text(source: dict[str, Any]) -> None:
+            metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+            for key in (
+                "name",
+                "display_name",
+                "family_display_name",
+                "sequence_family",
+                "label",
+                "headline",
+                "headline_hint",
+                "summary",
+                "sequence_summary",
+                "page_pattern",
+                "slide_pattern",
+                "structural_cues",
+                "sequence_cues",
+            ):
+                value = source.get(key) if key in source else metadata.get(key)
+                if isinstance(value, list):
+                    evidence.extend(str(item or "").strip() for item in value if str(item or "").strip())
+                elif str(value or "").strip():
+                    evidence.append(str(value).strip())
+
+        for recommendation in template_recommendations or []:
+            candidate_id = str(recommendation.get("template_id") or "").strip()
+            candidate_name = str(recommendation.get("name") or "").strip().casefold()
+            if (selected_id and candidate_id == selected_id) or (selected_name_key and candidate_name == selected_name_key):
+                _append_metadata_text(recommendation)
+
+        for asset in reference_assets or []:
+            if not isinstance(asset, dict):
+                continue
+            metadata = asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}
+            asset_label = str(metadata.get("label") or "").strip().casefold()
+            asset_signature = cls._sequence_pack_signature(asset.get("storage_path"))
+            matches_signature = (
+                selected_signature is not None
+                and asset_signature is not None
+                and asset_signature[0] == selected_signature[0]
+            )
+            matches_label = bool(selected_name_key and asset_label and selected_name_key in asset_label)
+            if not matches_signature and not matches_label:
+                continue
+            _append_metadata_text(asset)
+            storage_path = str(asset.get("storage_path") or "").strip()
+            if storage_path.lower().endswith(".pdf") or str(asset.get("mime_type") or "").lower() == "application/pdf":
+                evidence.extend(cls._read_reference_pdf_pages(storage_path)[:8])
+
+        return [text for text in evidence if text]
+
+    @classmethod
+    def _template_context_layout_semantically_conflicts(
+        cls,
+        base_context: dict[str, Any] | None,
+        evidence_texts: list[str],
+    ) -> bool:
+        if not isinstance(base_context, dict) or not evidence_texts:
+            return False
+        context_fragments: list[str] = []
+        for key in (
+            "editorial_dna",
+            "subject_semantics",
+            "visual_craft_dna",
+            "composition_logic",
+            "layout_dna",
+            "background_style",
+            "zone_map",
+        ):
+            value = base_context.get(key)
+            if value:
+                context_fragments.append(json.dumps(value, ensure_ascii=True, default=str))
+        if not context_fragments:
+            return False
+        context_tokens = cls._sequence_pack_relevance_tokens(" ".join(context_fragments))
+        evidence_tokens = cls._sequence_pack_relevance_tokens(" ".join(evidence_texts))
+        if len(context_tokens) < 4 or len(evidence_tokens) < 4:
+            return False
+        overlap = context_tokens.intersection(evidence_tokens)
+        overlap_ratio = len(overlap) / max(len(context_tokens), 1)
+        return overlap_ratio < 0.12
+
+    @classmethod
+    def _strip_conflicting_template_layout_context(cls, base_context: dict[str, Any]) -> dict[str, Any]:
+        cleaned = deepcopy(base_context or {})
+        for key in (
+            "icons",
+            "zones",
+            "layout_dna",
+            "layout_type",
+            "editorial_dna",
+            "background_style",
+            "visual_craft_dna",
+            "composition_logic",
+            "subject_semantics",
+            "zone_map",
+        ):
+            cleaned.pop(key, None)
+        cleaned["sample_metadata_status"] = "template_layout_context_ignored_due_to_semantic_mismatch"
+        return cleaned
+
+    @classmethod
+    def _apply_template_context_surface_policy_to_planning_hints(
+        cls,
+        planning_hints: dict[str, Any] | None,
+        template_context: dict[str, Any] | None,
+        studio_panel: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        hints = deepcopy(planning_hints if isinstance(planning_hints, dict) else {})
+        context = template_context if isinstance(template_context, dict) else {}
+        sequence_pack = context.get("sequence_pack") if isinstance(context.get("sequence_pack"), dict) else {}
+        surface_policy = str(sequence_pack.get("surface_policy") or "").strip().lower()
+        if not surface_policy:
+            return hints
+        asset_strategy = deepcopy(hints.get("asset_strategy") if isinstance(hints.get("asset_strategy"), dict) else {})
+        asset_strategy["template_surface_policy"] = surface_policy
+        format_name = str((studio_panel or {}).get("format") or "").strip().lower()
+        if surface_policy == "style_reference_only":
+            asset_strategy["use_template_background"] = False
+            asset_strategy["use_generated_image"] = True
+            asset_strategy["use_brand_reference_assets"] = True
+            asset_strategy.setdefault("dominant_visual_system", "generated_image")
+            asset_strategy.setdefault("supporting_visual_system", "reference_assets" if format_name == "carousel" else "none")
+        elif surface_policy in {"lock_template_surface", "sequence_pack_locked"}:
+            asset_strategy["use_template_background"] = True
+            asset_strategy["use_generated_image"] = False
+            asset_strategy.setdefault("dominant_visual_system", "template_background")
+        hints["asset_strategy"] = asset_strategy
+        hints["template_surface_policy"] = surface_policy
+        return hints
+
+    @classmethod
     def _knowledge_queries_for_channel(cls, prompt: str, channel: str) -> list[str]:
         base_prompt = " ".join(str(prompt or "").split()).strip()
         topic_terms = cls._topic_query_terms(base_prompt)
@@ -1625,6 +1871,19 @@ class ContentService:
             "story_blueprint",
             "summary",
             "label",
+            "format_family",
+            "editorial_dna",
+            "layout_dna",
+            "composition_logic",
+            "visual_craft",
+            "subject_semantics",
+            "family_name",
+            "sequence_family",
+            "slide_index",
+            "page_index",
+            "page_number",
+            "reference_slide_index",
+            "reference_slide_count",
         )
         for source in (normalized, structured):
             for key in curated_reference_keys:
@@ -1633,7 +1892,7 @@ class ContentService:
                     metadata.setdefault(key, value)
         if asset.page_count and not metadata.get("page_count"):
             metadata["page_count"] = asset.page_count
-        return {
+        payload = {
             "asset_id": str(asset.id),
             "asset_role": asset.metadata_json.get("asset_role", asset.channel),
             "mime_type": asset.mime_type,
@@ -1642,6 +1901,7 @@ class ContentService:
             "validation_state": asset.validation_state,
             "trust_level": ContentService._trust_level_for_validation_state(asset.validation_state),
         }
+        return ContentService._enrich_reference_asset_payload(payload)
 
     @staticmethod
     def _reusable_asset_payload(asset: dict[str, object]) -> dict[str, object]:
@@ -1799,6 +2059,306 @@ class ContentService:
                 authoritative.append(asset)
         return authoritative or list(request_assets)
 
+    @staticmethod
+    def _normalize_recommendation_format_family(value: Any) -> str | None:
+        text = str(value or "").strip().lower()
+        if not text:
+            return None
+        if text in {"carousel", "carousal", "slides", "multi_slide", "multi-slide", "multi_page", "multi-page"}:
+            return "carousel"
+        if text in {"infographic", "multi_section", "multi-section", "explainer_board", "explainer-board"}:
+            return "infographic"
+        if text in {"static", "single", "single_panel", "single-panel", "poster", "thumbnail", "post"}:
+            return "static"
+        return None
+
+    @classmethod
+    def _infer_reference_asset_format_family(cls, asset: dict[str, Any]) -> str | None:
+        metadata = asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}
+        editorial_dna = metadata.get("editorial_dna") if isinstance(metadata.get("editorial_dna"), dict) else {}
+        normalized_metadata = metadata.get("normalized_metadata") if isinstance(metadata.get("normalized_metadata"), dict) else {}
+        normalized_editorial_dna = (
+            normalized_metadata.get("editorial_dna")
+            if isinstance(normalized_metadata.get("editorial_dna"), dict)
+            else {}
+        )
+        for candidate in (
+            asset.get("format_family"),
+            metadata.get("format_family"),
+            metadata.get("surface_format"),
+            metadata.get("content_format"),
+            editorial_dna.get("format_family"),
+            normalized_metadata.get("format_family"),
+            normalized_editorial_dna.get("format_family"),
+        ):
+            normalized = cls._normalize_recommendation_format_family(candidate)
+            if normalized:
+                return normalized
+
+        probe = {
+            **dict(asset),
+            "metadata": metadata,
+        }
+        if cls._sequence_source_is_carousel_capable(probe):
+            return "carousel"
+
+        combined_text = " ".join(
+            str(part or "").strip()
+            for part in (
+                metadata.get("summary"),
+                metadata.get("label"),
+                metadata.get("sequence_summary"),
+                metadata.get("narrative_pattern"),
+                metadata.get("sequence_kind"),
+                metadata.get("source_filename"),
+                asset.get("storage_path"),
+            )
+            if str(part or "").strip()
+        ).casefold()
+        if any(token in combined_text for token in ("infographic", "explainer board", "data card", "section stack", "comparison card")):
+            return "infographic"
+        if any(token in combined_text for token in ("static", "poster", "single post", "single-page", "thumbnail")):
+            return "static"
+        return None
+
+    @classmethod
+    def _enrich_reference_asset_payload(cls, asset: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(asset, dict):
+            return {}
+        payload = dict(asset)
+        metadata = dict(payload.get("metadata") or {}) if isinstance(payload.get("metadata"), dict) else {}
+        editorial_dna = dict(metadata.get("editorial_dna") or {}) if isinstance(metadata.get("editorial_dna"), dict) else {}
+
+        signature = cls._sequence_source_signature({**payload, "metadata": metadata})
+        if signature is not None:
+            family_key, position = signature
+            metadata.setdefault("sequence_family", family_key)
+            metadata.setdefault("family_name", family_key)
+            metadata.setdefault("slide_index", position)
+            metadata.setdefault("reference_slide_index", position)
+
+        format_family = cls._infer_reference_asset_format_family({**payload, "metadata": metadata})
+        if format_family:
+            payload["format_family"] = format_family
+            metadata.setdefault("format_family", format_family)
+            editorial_dna.setdefault("format_family", format_family)
+
+        if metadata.get("page_count") is None:
+            declared_page_count = cls._sequence_pack_declared_page_count({**payload, "metadata": metadata})
+            if declared_page_count > 0:
+                metadata["page_count"] = declared_page_count
+
+        if editorial_dna:
+            metadata["editorial_dna"] = editorial_dna
+        payload["metadata"] = metadata
+        return payload
+
+    @classmethod
+    def _requested_template_format_family(cls, studio_panel: dict[str, Any] | None) -> str | None:
+        return cls._normalize_recommendation_format_family((studio_panel or {}).get("format"))
+
+    @classmethod
+    def _template_recommendation_format_family(cls, recommendation: object) -> str | None:
+        payload = recommendation.model_dump(mode="json") if hasattr(recommendation, "model_dump") else dict(recommendation)
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        explicit = cls._normalize_recommendation_format_family(metadata.get("format_family"))
+        if explicit:
+            return explicit
+        for candidate in (
+            metadata.get("layout_type"),
+            metadata.get("kind"),
+            payload.get("kind"),
+        ):
+            normalized = cls._normalize_recommendation_format_family(candidate)
+            if normalized:
+                return normalized
+        page_count = metadata.get("page_count")
+        try:
+            if int(page_count or 0) >= 3:
+                return "carousel"
+        except (TypeError, ValueError):
+            pass
+        return None
+
+    @classmethod
+    def _template_recommendation_adaptation_score(cls, recommendation: object) -> float:
+        payload = recommendation.model_dump(mode="json") if hasattr(recommendation, "model_dump") else dict(recommendation)
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        try:
+            return float(metadata.get("adaptation_score") or payload.get("score") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @classmethod
+    def _sort_template_recommendations_for_format(
+        cls,
+        recommendations: list[object],
+        *,
+        studio_panel: dict[str, Any] | None,
+    ) -> list[object]:
+        requested_format_family = cls._requested_template_format_family(studio_panel)
+        if not recommendations:
+            return []
+
+        def _rank(item: object) -> tuple[int, float, float]:
+            payload = item.model_dump(mode="json") if hasattr(item, "model_dump") else dict(item)
+            try:
+                score = float(payload.get("score") or 0.0)
+            except (TypeError, ValueError):
+                score = 0.0
+            family = cls._template_recommendation_format_family(item)
+            return (
+                1 if requested_format_family and family == requested_format_family else 0,
+                cls._template_recommendation_adaptation_score(item),
+                score,
+            )
+
+        return sorted(recommendations, key=_rank, reverse=True)
+
+    @classmethod
+    def _filter_reference_assets_for_studio_format(
+        cls,
+        assets: list[dict[str, object]],
+        *,
+        studio_panel: dict[str, Any] | None,
+    ) -> list[dict[str, object]]:
+        requested_format_family = cls._requested_template_format_family(studio_panel)
+        if not requested_format_family:
+            return [cls._enrich_reference_asset_payload(dict(asset)) for asset in assets if isinstance(asset, dict)]
+        enriched_assets = [
+            cls._enrich_reference_asset_payload(dict(asset))
+            for asset in assets
+            if isinstance(asset, dict)
+        ]
+        exact_matches = [
+            asset
+            for asset in enriched_assets
+            if cls._normalize_recommendation_format_family(
+                asset.get("format_family")
+                or ((asset.get("metadata") or {}) if isinstance(asset.get("metadata"), dict) else {}).get("format_family")
+            ) == requested_format_family
+        ]
+        return exact_matches or enriched_assets
+
+    @classmethod
+    def _collapse_carousel_template_recommendations(
+        cls,
+        recommendations: list[object],
+        *,
+        studio_panel: dict[str, Any] | None,
+    ) -> list[object]:
+        if cls._requested_template_format_family(studio_panel) != "carousel":
+            return recommendations
+        normalized: list[dict[str, Any]] = [
+            item.model_dump(mode="json") if hasattr(item, "model_dump") else dict(item)
+            for item in recommendations
+        ]
+        family_members: dict[str, list[dict[str, Any]]] = {}
+        for item in normalized:
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            family_key = str(
+                item.get("recommendation_group_key")
+                or metadata.get("sequence_family")
+                or metadata.get("recommendation_group_key")
+                or ""
+            ).strip()
+            if not family_key:
+                signature = cls._sequence_pack_signature(item.get("name"))
+                if signature is not None:
+                    family_key = signature[0]
+            if str(item.get("format_family") or metadata.get("format_family") or "").strip().lower() == "carousel" and family_key:
+                family_members.setdefault(family_key, []).append(item)
+
+        collapsed: list[dict[str, Any]] = []
+        seen_families: set[str] = set()
+        for item in normalized:
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            format_family = str(item.get("format_family") or metadata.get("format_family") or "").strip().lower()
+            family_key = str(
+                item.get("recommendation_group_key")
+                or metadata.get("sequence_family")
+                or metadata.get("recommendation_group_key")
+                or ""
+            ).strip()
+            if not family_key:
+                signature = cls._sequence_pack_signature(item.get("name"))
+                if signature is not None:
+                    family_key = signature[0]
+            if format_family != "carousel" or not family_key:
+                collapsed.append(item)
+                continue
+            if family_key in seen_families:
+                continue
+            seen_families.add(family_key)
+            members = family_members.get(family_key, [item])
+
+            def _position(member: dict[str, Any]) -> int:
+                member_metadata = member.get("metadata") if isinstance(member.get("metadata"), dict) else {}
+                try:
+                    return int(member_metadata.get("sequence_position") or 0)
+                except (TypeError, ValueError):
+                    return 0
+
+            def _adaptation(member: dict[str, Any]) -> float:
+                member_metadata = member.get("metadata") if isinstance(member.get("metadata"), dict) else {}
+                try:
+                    return float(member_metadata.get("adaptation_score") or member.get("score") or 0.0)
+                except (TypeError, ValueError):
+                    return 0.0
+
+            representative = next((member for member in members if _position(member) == 1), max(members, key=_adaptation))
+            representative_metadata = dict(representative.get("metadata") or {})
+            family_display_name = str(representative.get("display_name") or representative_metadata.get("family_display_name") or representative.get("name") or "").strip()
+            representative_metadata["family_member_count"] = len(members)
+            representative_metadata["family_slide_count"] = max(len(members), max((_position(member) for member in members), default=0))
+            representative_metadata["group_type"] = "carousel_family"
+            representative["display_name"] = family_display_name
+            representative["recommendation_group_key"] = family_key
+            representative["metadata"] = representative_metadata
+            collapsed.append(representative)
+        return collapsed
+
+    @classmethod
+    def _annotate_template_recommendation_selection(
+        cls,
+        recommendations: list[object],
+        *,
+        studio_panel: dict[str, Any] | None,
+    ) -> list[object]:
+        requested_format_family = cls._requested_template_format_family(studio_panel)
+        fallback_reason = {
+            "carousel": "Carousel Match",
+            "infographic": "Infographic Match",
+            "static": "Static Match",
+        }.get(requested_format_family, "Suggested Match")
+        annotated: list[dict[str, Any]] = []
+        for index, recommendation in enumerate(recommendations):
+            payload = recommendation.model_dump(mode="json") if hasattr(recommendation, "model_dump") else dict(recommendation)
+            payload["is_primary_adaptation"] = index == 0
+            payload["selection_reason"] = "Best Adaptation" if index == 0 else str(payload.get("selection_reason") or "").strip() or fallback_reason
+            if not payload.get("format_family"):
+                metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+                payload["format_family"] = cls._template_recommendation_format_family(payload) or metadata.get("format_family")
+            annotated.append(payload)
+        return annotated
+
+    @classmethod
+    def _filter_template_recommendations_for_studio_format(
+        cls,
+        recommendations: list[object],
+        *,
+        studio_panel: dict[str, Any] | None,
+    ) -> list[object]:
+        requested_format_family = cls._requested_template_format_family(studio_panel)
+        if not requested_format_family:
+            return recommendations
+        exact_matches = [
+            recommendation
+            for recommendation in recommendations
+            if cls._template_recommendation_format_family(recommendation) == requested_format_family
+        ]
+        return exact_matches or recommendations
+
     @classmethod
     def _request_asset_template_recommendations(
         cls,
@@ -1824,6 +2384,11 @@ class ContentService:
                 page_count_value = int(page_count or 0)
             except (TypeError, ValueError):
                 page_count_value = 0
+            format_family = cls._normalize_recommendation_format_family(
+                metadata.get("format_family")
+                or metadata.get("layout_type")
+                or ("carousel" if page_count_value >= 3 else None)
+            ) or ("carousel" if page_count_value >= 3 else "static")
             recommendations.append(
                 {
                     "template_id": None,
@@ -1861,6 +2426,10 @@ class ContentService:
                         "supported_platforms": [],
                         "supported_exports": ["pdf", "png", "jpg", "doc"],
                         "editable_fields": [],
+                        "format_family": format_family,
+                        "adaptation_score": 200.0 - float(index),
+                        "page_count": page_count_value,
+                        "layout_type": metadata.get("layout_type"),
                         "surface_kind": metadata.get("surface_kind"),
                         "text_overlay_risk": metadata.get("text_overlay_risk"),
                         "overlay_safe": bool(metadata.get("overlay_safe", True)),
@@ -1968,12 +2537,23 @@ class ContentService:
         *,
         prompt: str,
         follow_up_mode: str,
+        studio_panel: dict[str, Any] | None = None,
     ) -> list[object]:
+        recommendations = cls._filter_template_recommendations_for_studio_format(
+            recommendations,
+            studio_panel=studio_panel,
+        )
         if str(follow_up_mode or "").strip().casefold() != "new_content":
-            return recommendations
+            return cls._sort_template_recommendations_for_format(
+                recommendations,
+                studio_panel=studio_panel,
+            )
         prompt_tokens = cls._topic_tokens(prompt, limit=8)
         if not prompt_tokens:
-            return recommendations
+            return cls._sort_template_recommendations_for_format(
+                recommendations,
+                studio_panel=studio_panel,
+            )
         filtered: list[object] = []
         for recommendation in recommendations:
             payload = recommendation.model_dump(mode="json") if hasattr(recommendation, "model_dump") else dict(recommendation)
@@ -1991,7 +2571,10 @@ class ContentService:
                 continue
             if cls._topic_tokens(label, limit=10) & prompt_tokens:
                 filtered.append(recommendation)
-        return filtered or recommendations
+        return cls._sort_template_recommendations_for_format(
+            filtered or recommendations,
+            studio_panel=studio_panel,
+        )
 
     @staticmethod
     def _parse_uuid_or_none(value: str | UUID | None) -> UUID | None:
@@ -3205,6 +3788,125 @@ class ContentService:
             return None
         family = re.sub(r"[-_\s]+", "-", match.group("family")).strip("-").upper()
         return (family, slide_index) if family else None
+
+    @classmethod
+    def _sequence_signature_looks_like_generic_capture(
+        cls,
+        signature: tuple[str, int] | None,
+    ) -> bool:
+        if signature is None:
+            return False
+        family, _position = signature
+        family_text = str(family or "").strip().casefold()
+        if not family_text:
+            return True
+        generic_markers = {"whatsapp", "image", "img", "screenshot", "screen-shot", "scan", "photo", "picture"}
+        if any(marker in family_text for marker in generic_markers):
+            return True
+        if re.search(r"\b20\d{2}\b", family_text):
+            return True
+        return False
+
+    @classmethod
+    def _sequence_source_signature(cls, source: dict[str, Any] | None) -> tuple[str, int] | None:
+        if not isinstance(source, dict):
+            return None
+        metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+
+        slide_index = 0
+        for raw_index in (
+            metadata.get("reference_slide_index"),
+            metadata.get("slide_index"),
+            metadata.get("page_index"),
+            metadata.get("page_number"),
+            source.get("reference_slide_index"),
+            source.get("slide_index"),
+            source.get("page_index"),
+            source.get("page_number"),
+        ):
+            try:
+                slide_index = int(raw_index or 0)
+            except (TypeError, ValueError):
+                slide_index = 0
+            if slide_index > 0:
+                break
+
+        if slide_index > 0:
+            for family_value in (metadata.get("sequence_family"), metadata.get("family_name")):
+                family_text = re.sub(r"[-_\s]+", "-", str(family_value or "")).strip("-").upper()
+                if family_text:
+                    return (family_text, slide_index)
+
+        for raw_value in (
+            metadata.get("sequence_family"),
+            metadata.get("family_name"),
+            metadata.get("label"),
+            metadata.get("source_filename"),
+            metadata.get("original_filename"),
+            source.get("storage_path"),
+        ):
+            signature = cls._sequence_pack_signature(raw_value)
+            if signature is not None:
+                return signature
+        return None
+
+    @classmethod
+    def _sequence_pack_declared_page_count(cls, source: dict[str, Any] | None) -> int:
+        if not isinstance(source, dict):
+            return 0
+        metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+        for raw_count in (
+            source.get("page_count"),
+            source.get("slide_count"),
+            source.get("preflight_page_count"),
+            metadata.get("page_count"),
+            metadata.get("slide_count"),
+            metadata.get("preflight_page_count"),
+        ):
+            try:
+                parsed = int(raw_count or 0)
+            except (TypeError, ValueError):
+                parsed = 0
+            if parsed > 0:
+                return parsed
+        return 0
+
+    @classmethod
+    def _sequence_pack_has_explicit_blueprint(cls, metadata: dict[str, Any] | None) -> bool:
+        if not isinstance(metadata, dict):
+            return False
+        if any(metadata.get(key) for key in cls._sequence_pack_explicit_blueprint_keys()):
+            return True
+        return any(
+            isinstance(metadata.get(key), list) and any(isinstance(item, dict) for item in metadata.get(key) or [])
+            for key in ("slides", "pages", "story_outline", "outline")
+        )
+
+    @classmethod
+    def _sequence_source_is_carousel_capable(cls, source: dict[str, Any] | None) -> bool:
+        if not isinstance(source, dict):
+            return False
+        metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+        if cls._sequence_pack_has_explicit_blueprint(metadata):
+            return True
+        signature = cls._sequence_source_signature(source)
+        if signature is not None and not cls._sequence_signature_looks_like_generic_capture(signature):
+            return True
+        page_count = cls._sequence_pack_declared_page_count(source)
+        if page_count >= 3:
+            return True
+        for raw_value in (
+            metadata.get("format"),
+            metadata.get("layout_type"),
+            metadata.get("narrative_pattern"),
+            metadata.get("sequence_kind"),
+            source.get("kind"),
+        ):
+            normalized = str(raw_value or "").strip().casefold()
+            if normalized in {"carousel", "multi_section", "reference_pdf_blueprint"}:
+                return True
+        storage_path = str(source.get("storage_path") or "").strip().lower()
+        return storage_path.endswith(".pdf")
 
     @classmethod
     def _sequence_pack_is_visual_summary(cls, value: object) -> bool:
@@ -4440,6 +5142,7 @@ class ContentService:
     def _build_template_context_payload(
         cls,
         *,
+        prompt: str | None,
         template_meta,
         selected_template_id: str | None,
         selected_template_name: str | None,
@@ -4469,7 +5172,102 @@ class ContentService:
             elif isinstance(recommendation, dict):
                 normalized_recommendations.append(dict(recommendation))
 
+        normalized_selected_template_id = str(selected_template_id or "").strip()
+        normalized_selected_template_name = str(selected_template_name or "").strip()
+        normalized_selected_template_name_key = normalized_selected_template_name.casefold()
+
+        def is_selected_template_recommendation(candidate: dict[str, Any]) -> bool:
+            candidate_id = str(candidate.get("template_id") or "").strip()
+            candidate_name = str(candidate.get("name") or "").strip().casefold()
+            return (
+                normalized_selected_template_id
+                and candidate_id
+                and candidate_id == normalized_selected_template_id
+            ) or (
+                normalized_selected_template_name_key
+                and candidate_name
+                and candidate_name == normalized_selected_template_name_key
+            )
+
+        def is_selected_template_reference_asset(candidate: dict[str, Any]) -> bool:
+            if not normalized_selected_template_name_key:
+                return False
+            metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+            candidate_values = [
+                str(metadata.get("label") or "").strip().casefold(),
+                str(metadata.get("family_name") or "").strip().casefold(),
+                str(metadata.get("sequence_family") or "").strip().casefold(),
+                str(candidate.get("storage_path") or "").replace("\\", "/").rsplit("/", 1)[-1].casefold(),
+            ]
+            return any(
+                value and normalized_selected_template_name_key in value
+                for value in candidate_values
+            )
+
+        def dedupe_items(
+            items: list[dict[str, Any]],
+            *,
+            key_builder,
+        ) -> list[dict[str, Any]]:
+            deduped: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            for item in items:
+                key = str(key_builder(item) or "").strip()
+                if key and key in seen:
+                    continue
+                if key:
+                    seen.add(key)
+                deduped.append(dict(item))
+            return deduped
+
+        carousel_recommendations = [
+            dict(recommendation)
+            for recommendation in normalized_recommendations
+            if cls._sequence_source_is_carousel_capable(recommendation)
+        ]
+        carousel_reference_assets = [
+            dict(asset)
+            for asset in reference_assets or []
+            if isinstance(asset, dict) and cls._sequence_source_is_carousel_capable(asset)
+        ]
+        if carousel_recommendations or carousel_reference_assets:
+            selected_template_recommendations = [
+                dict(recommendation)
+                for recommendation in normalized_recommendations
+                if is_selected_template_recommendation(recommendation)
+            ]
+            selected_template_reference_assets = [
+                dict(asset)
+                for asset in reference_assets or []
+                if isinstance(asset, dict) and is_selected_template_reference_asset(asset)
+            ]
+            normalized_recommendations = dedupe_items(
+                [*carousel_recommendations, *selected_template_recommendations]
+                if carousel_recommendations
+                else normalized_recommendations,
+                key_builder=lambda item: (
+                    str(item.get("template_id") or "").strip()
+                    or str(item.get("name") or "").strip()
+                ),
+            )
+            reference_assets = dedupe_items(
+                [*carousel_reference_assets, *selected_template_reference_assets]
+                if carousel_reference_assets
+                else reference_assets,
+                key_builder=lambda item: str(item.get("storage_path") or "").strip(),
+            )
+
         fallback_editable_fields = list(base_context.get("editable_fields") or [])
+        selected_context_evidence = cls._selected_template_context_evidence_texts(
+            prompt=prompt,
+            selected_template_name=normalized_selected_template_name,
+            selected_template_id=normalized_selected_template_id,
+            template_recommendations=normalized_recommendations,
+            reference_assets=reference_assets,
+        )
+        if cls._template_context_layout_semantically_conflicts(base_context, selected_context_evidence):
+            base_context = cls._strip_conflicting_template_layout_context(base_context)
+            fallback_editable_fields = list(base_context.get("editable_fields") or fallback_editable_fields)
         explicit_sequence_pack = cls._build_reference_metadata_sequence_pack(
             selected_template_id=selected_template_id,
             selected_template_name=selected_template_name,
@@ -4478,19 +5276,40 @@ class ContentService:
             fallback_editable_fields=fallback_editable_fields,
         )
 
-        normalized_selected_template_id = str(selected_template_id or "").strip()
-        normalized_selected_template_name = str(selected_template_name or "").strip()
+        pinned_template_id = str((studio_panel or {}).get("pinned_template_id") or "").strip()
+        allow_irrelevant_sequence_pack = bool(pinned_template_id)
+        def should_keep_sequence_pack(
+            sequence_pack: dict[str, Any] | None,
+            *,
+            selected_template_authority: bool = False,
+        ) -> bool:
+            if not isinstance(sequence_pack, dict):
+                return False
+            if selected_template_authority and (normalized_selected_template_id or normalized_selected_template_name):
+                return True
+            if allow_irrelevant_sequence_pack:
+                return True
+            return cls._sequence_pack_is_relevant_to_prompt(prompt, sequence_pack)
+
         explicit_matches_selection = cls._sequence_pack_matches_selected_template(
             explicit_sequence_pack,
             selected_template_id=normalized_selected_template_id,
             selected_template_name=normalized_selected_template_name,
         )
+        explicit_selected_template_authority = explicit_matches_selection and bool(
+            normalized_selected_template_id or normalized_selected_template_name
+        )
         if explicit_sequence_pack and explicit_matches_selection:
-            base_context["sequence_pack"] = cls._resolve_authoritative_sequence_pack(
+            resolved_pack = cls._resolve_authoritative_sequence_pack(
                 explicit_sequence_pack,
                 selected_template_id=normalized_selected_template_id,
                 selected_template_name=normalized_selected_template_name,
             )
+            if should_keep_sequence_pack(
+                resolved_pack,
+                selected_template_authority=explicit_selected_template_authority,
+            ):
+                base_context["sequence_pack"] = resolved_pack
             return base_context or None
         selected_template_authority_pack = cls._build_selected_template_authority_sequence_pack(
             selected_template_id=normalized_selected_template_id,
@@ -4504,19 +5323,26 @@ class ContentService:
         family_signature = cls._sequence_pack_signature(selected_template_name)
         if family_signature is None and explicit_sequence_pack and (normalized_selected_template_id or normalized_selected_template_name):
             if selected_template_authority_pack is not None:
-                base_context["sequence_pack"] = cls._resolve_authoritative_sequence_pack(
+                resolved_pack = cls._resolve_authoritative_sequence_pack(
                     selected_template_authority_pack,
                     selected_template_id=normalized_selected_template_id,
                     selected_template_name=normalized_selected_template_name,
                     selected_template_authority_pack=selected_template_authority_pack,
                 )
+                if should_keep_sequence_pack(resolved_pack, selected_template_authority=True):
+                    base_context["sequence_pack"] = resolved_pack
                 return base_context or None
-            base_context["sequence_pack"] = cls._resolve_authoritative_sequence_pack(
+            resolved_pack = cls._resolve_authoritative_sequence_pack(
                 explicit_sequence_pack,
                 selected_template_id=normalized_selected_template_id,
                 selected_template_name=normalized_selected_template_name,
                 selected_template_authority_pack=selected_template_authority_pack,
             )
+            if should_keep_sequence_pack(
+                resolved_pack,
+                selected_template_authority=explicit_selected_template_authority,
+            ):
+                base_context["sequence_pack"] = resolved_pack
             return base_context or None
         if family_signature is None:
             for recommendation in normalized_recommendations:
@@ -4530,12 +5356,17 @@ class ContentService:
                     break
         if family_signature is None:
             if explicit_sequence_pack:
-                base_context["sequence_pack"] = cls._resolve_authoritative_sequence_pack(
+                resolved_pack = cls._resolve_authoritative_sequence_pack(
                     explicit_sequence_pack,
                     selected_template_id=normalized_selected_template_id,
                     selected_template_name=normalized_selected_template_name,
                     selected_template_authority_pack=selected_template_authority_pack,
                 )
+                if should_keep_sequence_pack(
+                    resolved_pack,
+                    selected_template_authority=explicit_selected_template_authority,
+                ):
+                    base_context["sequence_pack"] = resolved_pack
                 return base_context or None
             return base_context or None
 
@@ -4559,20 +5390,27 @@ class ContentService:
         slide_indexes = sorted(set(recommendation_by_index) | set(reference_by_index))
         if len(slide_indexes) < 3:
             if selected_template_authority_pack is not None:
-                base_context["sequence_pack"] = cls._resolve_authoritative_sequence_pack(
+                resolved_pack = cls._resolve_authoritative_sequence_pack(
                     selected_template_authority_pack,
                     selected_template_id=normalized_selected_template_id,
                     selected_template_name=normalized_selected_template_name,
                     selected_template_authority_pack=selected_template_authority_pack,
                 )
+                if should_keep_sequence_pack(resolved_pack, selected_template_authority=True):
+                    base_context["sequence_pack"] = resolved_pack
                 return base_context or None
             if explicit_sequence_pack:
-                base_context["sequence_pack"] = cls._resolve_authoritative_sequence_pack(
+                resolved_pack = cls._resolve_authoritative_sequence_pack(
                     explicit_sequence_pack,
                     selected_template_id=normalized_selected_template_id,
                     selected_template_name=normalized_selected_template_name,
                     selected_template_authority_pack=selected_template_authority_pack,
                 )
+                if should_keep_sequence_pack(
+                    resolved_pack,
+                    selected_template_authority=explicit_selected_template_authority,
+                ):
+                    base_context["sequence_pack"] = resolved_pack
                 return base_context or None
             return base_context or None
 
@@ -4672,19 +5510,23 @@ class ContentService:
             selected_template_id=normalized_selected_template_id,
             selected_template_name=normalized_selected_template_name,
         ) and selected_template_authority_pack is not None:
-            base_context["sequence_pack"] = cls._resolve_authoritative_sequence_pack(
+            resolved_pack = cls._resolve_authoritative_sequence_pack(
                 selected_template_authority_pack,
                 selected_template_id=normalized_selected_template_id,
                 selected_template_name=normalized_selected_template_name,
                 selected_template_authority_pack=selected_template_authority_pack,
             )
+            if should_keep_sequence_pack(resolved_pack, selected_template_authority=True):
+                base_context["sequence_pack"] = resolved_pack
             return base_context or None
-        base_context["sequence_pack"] = cls._resolve_authoritative_sequence_pack(
+        resolved_pack = cls._resolve_authoritative_sequence_pack(
             sequence_pack,
             selected_template_id=normalized_selected_template_id,
             selected_template_name=normalized_selected_template_name,
             selected_template_authority_pack=selected_template_authority_pack,
         )
+        if should_keep_sequence_pack(resolved_pack):
+            base_context["sequence_pack"] = resolved_pack
         return base_context or None
 
     async def _get_or_create_session(
@@ -6534,11 +7376,14 @@ class ContentService:
         studio_panel: dict | None,
         assets: list[GeneratedAsset],
     ) -> bool:
-        # Keep AI final-render outputs on the direct asset export path.
-        # Backend text-overlay rerendering can disturb AI-composed layouts for
-        # static, infographic, and carousel visuals even when an overlay
-        # contract is present in metadata.
-        return False
+        format_name = str((studio_panel or {}).get("format") or "").strip().lower()
+        if format_name != "carousel":
+            return False
+        return any(
+            isinstance((asset.metadata_json or {}).get("render_overlay_scene_graph"), dict)
+            and isinstance((asset.metadata_json or {}).get("render_overlay_text"), dict)
+            for asset in assets
+        )
 
     @staticmethod
     def _ai_final_render_asset_has_overlay_contract(asset: GeneratedAsset) -> bool:
@@ -7677,10 +8522,26 @@ class ContentService:
             selected_template_name=selected_template_name,
             reference_assets=reference_assets,
         )
+        primary_recommendation = recommendations[0] if recommendations else {}
+        selected_template_value = str(decision.template_id or selected_template_id or "").strip()
+        selected_template_name_value = str(decision.template_name or selected_template_name or "").strip()
+        primary_template_id = str(primary_recommendation.get("template_id") or "").strip()
+        primary_template_name = str(primary_recommendation.get("name") or "").strip()
+        primary_matches_selected = bool(
+            primary_recommendation
+            and (
+                (primary_template_id and primary_template_id == selected_template_value)
+                or (primary_template_name and primary_template_name == selected_template_name_value)
+            )
+        )
         return {
             **decision.to_payload(),
             "source": "backend_planning_hints",
             "authoritative": False,
+            "primary_adaptation_template_id": primary_template_id or None,
+            "primary_adaptation_template_name": primary_template_name or None,
+            "primary_adaptation_selection_reason": primary_recommendation.get("selection_reason"),
+            "primary_adaptation_matches_selected_template": primary_matches_selected,
             "template_recommendations": recommendations[:5],
         }
 
@@ -7939,6 +8800,10 @@ class ContentService:
             brand_space_id=brand_space_id,
             reference_asset_ids=payload.reference_asset_ids,
         )
+        request_reference_assets = self._filter_reference_assets_for_studio_format(
+            request_reference_assets,
+            studio_panel=payload.studio_panel.model_dump(),
+        )
         brand_reference_assets = await self._resolve_brand_reference_assets(
             tenant_id=tenant_id,
             brand_space_id=brand_space_id,
@@ -7949,20 +8814,41 @@ class ContentService:
             prompt=effective_prompt,
             follow_up_mode=follow_up_mode,
         )
+        brand_reference_assets = self._filter_reference_assets_for_studio_format(
+            brand_reference_assets,
+            studio_panel=payload.studio_panel.model_dump(),
+        )
         template_recommendations = self._filter_template_recommendations_for_prompt(
             list(template_recommendations),
             prompt=effective_prompt,
             follow_up_mode=follow_up_mode,
+            studio_panel=payload.studio_panel.model_dump(),
         )
         template_recommendations = self._merge_template_recommendations_for_prompt(
             prompt=effective_prompt,
             request_reference_assets=request_reference_assets,
             template_recommendations=list(template_recommendations),
         )
+        template_recommendations = self._sort_template_recommendations_for_format(
+            list(template_recommendations),
+            studio_panel=payload.studio_panel.model_dump(),
+        )
+        template_recommendations = self._collapse_carousel_template_recommendations(
+            list(template_recommendations),
+            studio_panel=payload.studio_panel.model_dump(),
+        )
+        template_recommendations = self._annotate_template_recommendation_selection(
+            list(template_recommendations),
+            studio_panel=payload.studio_panel.model_dump(),
+        )
         reference_assets = self._merge_reference_assets_for_prompt(
             prompt=effective_prompt,
             request_reference_assets=request_reference_assets,
             brand_reference_assets=brand_reference_assets,
+        )
+        reference_assets = self._filter_reference_assets_for_studio_format(
+            reference_assets,
+            studio_panel=payload.studio_panel.model_dump(),
         )
         tracked_reference_assets = input_access_tracker.wrap_source("reference_assets", reference_assets)
         template_recommendation_payloads = [
@@ -7991,7 +8877,7 @@ class ContentService:
         )
         self.trace.write_payload(
             trace_id,
-            "content_request",
+            "content_request_pre_template_context",
             {
                 "prompt": effective_prompt,
                 "studio_panel": payload.studio_panel.model_dump(),
@@ -8037,6 +8923,7 @@ class ContentService:
             else None
         )
         template_context = self._build_template_context_payload(
+            prompt=effective_prompt,
             template_meta=template_meta,
             selected_template_id=selected_template_context_id,
             selected_template_name=selected_template_name,
@@ -8044,7 +8931,38 @@ class ContentService:
             reference_assets=tracked_reference_assets,
             studio_panel=payload.studio_panel.model_dump(),
         )
+        planning_hints = self._apply_template_context_surface_policy_to_planning_hints(
+            planning_hints,
+            template_context,
+            payload.studio_panel.model_dump(),
+        )
         tracked_template_context = input_access_tracker.wrap_source("template_context", template_context)
+        self.trace.write_payload(
+            trace_id,
+            "content_request",
+            {
+                "prompt": effective_prompt,
+                "studio_panel": payload.studio_panel.model_dump(),
+                "planning_hints": planning_hints,
+                "template_context": template_context,
+                "template_recommendations": tracked_template_candidates,
+                "reference_assets": reference_assets,
+                "logo_asset_path": logo_asset_path,
+                "logo_candidates": logo_candidates,
+                "logo_selection": logo_selection,
+                "session_memory": session_memory,
+                "request_lineage": request_lineage,
+                "prompt_lineage": prompt_lineage,
+                "prompt_sanitization": prompt_sanitization,
+                "prompt_diagnostics": self._build_prompt_diagnostics(
+                    prompt=effective_prompt,
+                    session_memory=session_memory,
+                ),
+                "brand_context": tracked_runtime_brand_context,
+                "persona_context": tracked_persona_context,
+                "objective_context": tracked_objective_context,
+            },
+        )
 
         await self.usage.enforce(tenant_id, UsageMetricCode.CONTENT_GENERATIONS)
         retrieved_knowledge, knowledge_state = await self._build_retrieved_knowledge(

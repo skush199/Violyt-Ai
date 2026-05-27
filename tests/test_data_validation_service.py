@@ -169,6 +169,103 @@ def test_normalized_palette_role_map_can_use_template_evidence_for_missing_roles
     assert resolved["background"] == "#F8F2E6"
 
 
+def test_synthesize_reference_system_builds_dynamic_visual_style_policy() -> None:
+    synthesis = DataValidatorService._synthesize_reference_system(
+        references=[
+            {
+                "asset_id": "ref-photo-1",
+                "style_characteristics": {
+                    "design_style": "photo",
+                    "image_treatment": {"style": "photo"},
+                    "visual_craft_dna": {"depth_style": "flat", "rendering_style": "photo"},
+                    "subject_semantics": {
+                        "scene_type": "premium seafood still life",
+                        "primary_subjects": ["food", "prawns"],
+                        "human_presence": "none",
+                        "abstraction_level": "literal",
+                    },
+                    "infographic_elements": {"icons": "minimal", "graphs": "none"},
+                    "editorial_dna": {"format_family": "carousel", "story_arc_roles": ["hook"], "closing_style": "reflective_close"},
+                },
+                "reusable_zones": [],
+                "brand_score": 0.8,
+            },
+            {
+                "asset_id": "ref-photo-2",
+                "style_characteristics": {
+                    "design_style": "photo",
+                    "image_treatment": {"style": "photo"},
+                    "visual_craft_dna": {"depth_style": "flat", "rendering_style": "photo"},
+                    "subject_semantics": {
+                        "scene_type": "plated meal closeup",
+                        "primary_subjects": ["food", "fish"],
+                        "human_presence": "none",
+                        "abstraction_level": "literal",
+                    },
+                    "infographic_elements": {"icons": "none", "graphs": "none"},
+                    "editorial_dna": {"format_family": "carousel", "story_arc_roles": ["detail"], "closing_style": "reflective_close"},
+                },
+                "reusable_zones": [],
+                "brand_score": 0.82,
+            },
+            {
+                "asset_id": "ref-3d-1",
+                "style_characteristics": {
+                    "design_style": "3d",
+                    "image_treatment": {"style": "3d"},
+                    "visual_craft_dna": {"depth_style": "true_3d", "rendering_style": "3d_render"},
+                    "subject_semantics": {
+                        "scene_type": "finance concept metaphor",
+                        "primary_subjects": ["coins", "calculator"],
+                        "human_presence": "none",
+                        "abstraction_level": "conceptual",
+                    },
+                    "infographic_elements": {"icons": "present", "graphs": "present"},
+                    "editorial_dna": {"format_family": "carousel", "story_arc_roles": ["cta"], "closing_style": "cta_close"},
+                },
+                "reusable_zones": [],
+                "brand_score": 0.9,
+            },
+        ],
+        templates=[],
+    )
+
+    policy = synthesis["visual_style_policy"]
+    carousel_policy = synthesis["format_visual_style_profiles"]["carousel"]
+
+    assert policy["dominant_image_mode"] == "photo"
+    assert policy["dominant_rendering_mode"] == "photo"
+    assert policy["style_consistency"] == "moderate"
+    assert policy["reference_pattern_priority"] == "brand_dominant"
+    assert policy["three_d_usage"] == "sometimes"
+    assert carousel_policy["dominant_subject_mode"] == "food"
+    assert "3d" in policy["image_modes"]
+
+
+def test_visual_style_profile_falls_back_from_legacy_style_characteristics() -> None:
+    profile = DataValidatorService._visual_style_profile_from_record(
+        {
+            "design_style": "3d",
+            "image_treatment": {"style": "3d"},
+            "visual_craft_dna": {"depth_style": "true_3d", "rendering_style": "3d_render"},
+            "subject_semantics": {
+                "scene_type": "isometric finance object scene",
+                "primary_subjects": ["calculator", "coins"],
+                "human_presence": "none",
+                "abstraction_level": "conceptual",
+            },
+            "infographic_elements": {"icons": "present", "graphs": "none"},
+            "editorial_dna": {"story_arc_roles": ["hook"], "closing_style": "reflective_close"},
+        }
+    )
+
+    assert profile["image_mode"] == "3d"
+    assert profile["depth_mode"] == "true_3d"
+    assert profile["rendering_mode"] == "3d_render"
+    assert profile["support_mode"] == "icon_led"
+    assert profile["story_visual_role"] == "hook_hero"
+
+
 @pytest.mark.asyncio
 async def test_resolve_audience_preserves_distinct_research_summaries() -> None:
     service = DataValidatorService(session=None)  # type: ignore[arg-type]

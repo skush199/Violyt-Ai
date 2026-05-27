@@ -1813,6 +1813,197 @@ class BrandAssetAnalyzer:
             "abstraction_level": abstraction_level,
         }
 
+    @staticmethod
+    def _dedupe_visual_style_values(values: list[str], *, limit: int = 6) -> list[str]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            normalized = str(value or "").strip().lower()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered.append(normalized)
+            if len(ordered) >= limit:
+                break
+        return ordered
+
+    @staticmethod
+    def _supports_visual_signal(value: Any) -> bool:
+        normalized = str(value or "").strip().lower()
+        return normalized not in {"", "none", "no", "false", "0", "null", "unknown"}
+
+    @staticmethod
+    def _rendering_family(rendering_mode: str) -> str:
+        normalized = str(rendering_mode or "").strip().lower()
+        return {
+            "photo": "photo",
+            "vector": "illustration",
+            "3d_render": "3d",
+        }.get(normalized, "mixed" if normalized in {"mixed", "composite"} else "")
+
+    def _derive_visual_style_profile(
+        self,
+        *,
+        vision: dict[str, Any],
+        visual_craft_dna: dict[str, Any],
+        subject_semantics: dict[str, Any],
+        editorial_dna: dict[str, Any],
+    ) -> dict[str, Any]:
+        image_treatment = vision.get("image_treatment") if isinstance(vision.get("image_treatment"), dict) else {}
+        infographic_elements = vision.get("infographic_elements") if isinstance(vision.get("infographic_elements"), dict) else {}
+        design_style = str(vision.get("design_style") or "").strip().lower()
+        treatment_style = str(image_treatment.get("style") or "").strip().lower()
+        rendering_style = str(visual_craft_dna.get("rendering_style") or "").strip().lower()
+        depth_style = str(visual_craft_dna.get("depth_style") or "").strip().lower()
+        scene_type = str(subject_semantics.get("scene_type") or "").strip().lower()
+        abstraction_level = str(subject_semantics.get("abstraction_level") or "").strip().lower()
+        human_presence = str(subject_semantics.get("human_presence") or "").strip().lower()
+        primary_subjects = [
+            str(item or "").strip().lower()
+            for item in (subject_semantics.get("primary_subjects") or [])
+            if str(item or "").strip()
+        ]
+        storytelling_mode = str(editorial_dna.get("storytelling_mode") or "").strip().lower()
+        explanation_style = str(editorial_dna.get("explanation_style") or "").strip().lower()
+        closing_style = str(editorial_dna.get("closing_style") or "").strip().lower()
+        story_roles = [
+            str(item or "").strip().lower()
+            for item in (editorial_dna.get("story_arc_roles") or [])
+            if str(item or "").strip()
+        ]
+        image_signal_text = " ".join(
+            [
+                design_style,
+                treatment_style,
+                rendering_style,
+                depth_style,
+                scene_type,
+                abstraction_level,
+                " ".join(primary_subjects),
+            ]
+        )
+
+        if "3d" in image_signal_text:
+            image_mode = "3d"
+        elif any(token in image_signal_text for token in ("photo", "photograph", "editorial", "lifestyle", "portrait", "food")):
+            image_mode = "photo"
+        elif any(token in image_signal_text for token in ("illustration", "vector", "iconic", "abstract", "diagram")):
+            image_mode = "illustration"
+        elif any(token in image_signal_text for token in ("mixed", "composite", "collage")):
+            image_mode = "mixed"
+        else:
+            image_mode = "mixed" if rendering_style == "mixed" else "illustration"
+
+        if depth_style == "true_3d":
+            depth_mode = "true_3d"
+        elif depth_style in {"layered", "3d_illusion"}:
+            depth_mode = depth_style
+        elif depth_style == "flat":
+            depth_mode = "flat"
+        elif "isometric" in image_signal_text or "2.5d" in image_signal_text:
+            depth_mode = "3d_illusion"
+        else:
+            depth_mode = "flat"
+
+        if rendering_style == "3d_render":
+            rendering_mode = "3d_render"
+        elif rendering_style in {"photo", "vector", "composite", "mixed"}:
+            rendering_mode = rendering_style
+        elif image_mode == "photo":
+            rendering_mode = "photo"
+        elif image_mode == "3d":
+            rendering_mode = "3d_render"
+        elif any(token in image_signal_text for token in ("collage", "overlay", "composite")):
+            rendering_mode = "composite"
+        else:
+            rendering_mode = "vector"
+
+        if any(token in " ".join(primary_subjects + [scene_type]) for token in ("food", "fish", "prawn", "seafood", "dish", "recipe", "meal")):
+            subject_mode = "food"
+        elif human_presence not in {"", "none"} or any(
+            token in " ".join(primary_subjects + [scene_type])
+            for token in ("human", "people", "person", "child", "parent", "coach", "team", "family", "patient")
+        ):
+            subject_mode = "human"
+        elif any(token in " ".join(primary_subjects + [scene_type]) for token in ("dashboard", "app", "screen", "laptop", "mockup", "product")):
+            subject_mode = "product_mockup"
+        elif any(token in " ".join(primary_subjects + [scene_type]) for token in ("metaphor", "concept", "bias", "mindset", "journey")) or abstraction_level == "conceptual":
+            subject_mode = "conceptual"
+        elif self._supports_visual_signal(infographic_elements.get("graphs")) or self._supports_visual_signal(infographic_elements.get("icons")):
+            subject_mode = "infographic"
+        elif primary_subjects:
+            subject_mode = "object"
+        else:
+            subject_mode = "mixed"
+
+        has_graphs = any(
+            self._supports_visual_signal(infographic_elements.get(key))
+            for key in ("graphs", "charts", "data_visuals", "tables")
+        )
+        has_icons = any(
+            self._supports_visual_signal(infographic_elements.get(key))
+            for key in ("icons", "badges", "markers", "pictograms")
+        )
+        if has_graphs and has_icons:
+            support_mode = "mixed"
+        elif has_graphs:
+            support_mode = "chart_led"
+        elif has_icons:
+            support_mode = "icon_led"
+        elif image_mode == "photo":
+            support_mode = "photo_led"
+        elif subject_mode in {"food", "object", "product_mockup"} or image_mode == "3d":
+            support_mode = "object_led"
+        elif not self._supports_visual_signal(image_treatment.get("style")):
+            support_mode = "text_led"
+        else:
+            support_mode = "mixed"
+
+        if closing_style == "cta_close" or any(role in {"cta", "cta_close", "close", "ending", "closing"} for role in story_roles):
+            story_visual_role = "cta_close"
+        elif any(role in {"hook", "cover", "intro", "opening", "context"} for role in story_roles):
+            story_visual_role = "hook_hero"
+        elif storytelling_mode == "comparison":
+            story_visual_role = "comparison"
+        elif storytelling_mode in {"steps", "benefit_stack"} or explanation_style == "stepwise_educational":
+            story_visual_role = "steps"
+        elif storytelling_mode == "data_story" or has_graphs:
+            story_visual_role = "data_story"
+        else:
+            story_visual_role = "detail_explainer"
+
+        style_mix = self._dedupe_visual_style_values(
+            [
+                image_mode,
+                depth_mode,
+                rendering_mode,
+                subject_mode,
+                support_mode,
+                story_visual_role,
+            ],
+            limit=8,
+        )
+        visual_families = {
+            family
+            for family in [
+                image_mode if image_mode in {"photo", "illustration", "3d"} else "",
+                self._rendering_family(rendering_mode),
+                "3d" if depth_mode in {"true_3d", "3d_illusion"} else "",
+            ]
+            if family
+        }
+        consistency_hint = "mixed_mode" if image_mode == "mixed" or rendering_mode == "mixed" or len(visual_families) >= 2 else "single_mode"
+        return {
+            "image_mode": image_mode,
+            "depth_mode": depth_mode,
+            "rendering_mode": rendering_mode,
+            "subject_mode": subject_mode,
+            "support_mode": support_mode,
+            "story_visual_role": story_visual_role,
+            "style_mix": style_mix,
+            "consistency_hint": consistency_hint,
+        }
+
     def _extract_template_intelligence(
         self,
         text: str,
@@ -2070,6 +2261,12 @@ class BrandAssetAnalyzer:
             template_copy_lines=template_copy_lines,
             classified_lines=classified_lines,
         )
+        visual_style_profile = self._derive_visual_style_profile(
+            vision=vision,
+            visual_craft_dna=visual_craft_dna,
+            subject_semantics=subject_semantics,
+            editorial_dna=editorial_dna,
+        )
         quality = self._analysis_quality(
             text=text,
             summary=style_summary,
@@ -2124,6 +2321,7 @@ class BrandAssetAnalyzer:
                 "composition_logic": vision.get("composition_logic", {}),
                 "visual_craft_dna": visual_craft_dna,
                 "subject_semantics": subject_semantics,
+                "visual_style_profile": visual_style_profile,
                 "brand_cues": vision.get("brand_cues", {}),
                 "design_tokens": design_tokens,
                 "editorial_dna": editorial_dna,
@@ -2156,6 +2354,7 @@ class BrandAssetAnalyzer:
             "composition_logic": vision.get("composition_logic", {}),
             "visual_craft_dna": visual_craft_dna,
             "subject_semantics": subject_semantics,
+            "visual_style_profile": visual_style_profile,
             "brand_cues": vision.get("brand_cues", {}),
             "design_tokens": design_tokens,
             "editorial_dna": editorial_dna,
@@ -2194,6 +2393,7 @@ class BrandAssetAnalyzer:
             "composition_logic": vision.get("composition_logic", {}),
             "visual_craft_dna": visual_craft_dna,
             "subject_semantics": subject_semantics,
+            "visual_style_profile": visual_style_profile,
             "brand_cues": vision.get("brand_cues", {}),
             "design_tokens": design_tokens,
             "editorial_dna": editorial_dna,
@@ -2242,6 +2442,7 @@ class BrandAssetAnalyzer:
             "composition_logic": vision.get("composition_logic", {}),
             "visual_craft_dna": visual_craft_dna,
             "subject_semantics": subject_semantics,
+            "visual_style_profile": visual_style_profile,
             "brand_cues": vision.get("brand_cues", {}),
             "design_tokens": design_tokens,
             "editorial_dna": editorial_dna,
