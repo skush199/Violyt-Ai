@@ -2604,6 +2604,18 @@ class AIOrchestratorService:
         )
 
     @classmethod
+    def _logo_non_generation_contract(cls, *, brand_name: str | None, reserved_logo_area: str) -> list[str]:
+        normalized_brand_name = cls._normalize_metadata_text(brand_name, limit=80)
+        brand_label = normalized_brand_name or "the brand name"
+        return [
+            f"Brand context only: {brand_label}. Use this for palette, tone, and approved copy context only, never as a logo, masthead, signature, watermark, standalone brand mark, or top-corner wordmark.",
+            "LOGO RULE - no exceptions: the AI base creative must contain zero logos, wordmarks, brand-name signatures, monograms, watermarks, logo-like shapes, symbol clusters, initials, mascot marks, or brand marks anywhere in the image.",
+            "Do not render, invent, stylize, trace, emboss, blur, shadow, crop, duplicate, partially duplicate, fade, ghost, hint at, or reserve a visible placeholder for any logo or wordmark. The exact stored brand logo is composited afterward as a separate asset.",
+            f"Never write or paint {brand_label} in the logo-safe corner. If approved legal/footer copy contains the brand name, it may appear only inside the legal/footer text region, never as a logo, header signature, watermark, or decorative brand lockup.",
+            f"The {reserved_logo_area} area must remain pure background reservation only: blank/quiet surface, no placeholder text, no ghosted wordmark, no orange/navy logo-like marks, no icon cluster, no badge, no plate, no chip, and no decorative detail.",
+        ]
+
+    @classmethod
     def _normalize_logo_safe_zone_geometry(
         cls,
         *,
@@ -11581,6 +11593,15 @@ class AIOrchestratorService:
                 corrections.append(f"Sample has about {expected} {label}; output has about {actual}. Match the sample count and rhythm more closely.")
         score_parts.append(sum(count_scores) / max(len(count_scores), 1))
 
+        output_logo_count = max(int(output_counts.get("logo_count") or 0), 0)
+        if exact_logo_overlay_deferred and output_logo_count > 0:
+            issues.append("ai_generated_logo_or_wordmark_detected")
+            hard_retry_issues.add("ai_generated_logo_or_wordmark_detected")
+            corrections.append(
+                "The exact logo is deferred to post-generation overlay, so the AI base image must contain zero logos, wordmarks, brand signatures, ghost marks, or logo-like shapes. Leave only an empty logo-safe background area."
+            )
+            score_parts.append(0.15)
+
         sample_density = cls._normalize_metadata_text(sample_blueprint.get("density"), limit=32)
         output_density = cls._normalize_metadata_text(output_blueprint.get("density"), limit=32)
         if sample_density and output_density and sample_density != output_density:
@@ -18931,8 +18952,10 @@ class AIOrchestratorService:
         )
         sections = [
             "Create one finished premium branded social creative.",
-            f"Brand context only: {brand_name}. Use this for palette, tone, and approved copy context only, never as a logo, masthead, signature, watermark, or standalone brand mark.",
-            "LOGO RULE - no exceptions: the AI base creative must contain zero logos, wordmarks, brand-name signatures, monograms, watermarks, logo-like shapes, or brand marks anywhere in the image. Do not render, invent, stylize, emboss, or hint at any logo, initials, or brand identity element; the exact stored logo will be applied afterward as-is. Do not place the brand name as a top-corner signature.",
+            *AIOrchestratorService._logo_non_generation_contract(
+                brand_name=brand_name,
+                reserved_logo_area=reserved_logo_area,
+            ),
             f"The {reserved_logo_area} area is strictly reserved for the brand logo asset. Do not place any headline, body copy, supporting text, proof point, CTA, icon, or visual element inside or immediately adjacent to this corner.",
             logo_safe_zone_guidance,
             logo_surface_guidance,
@@ -22668,6 +22691,12 @@ class AIOrchestratorService:
             if style_reference_sample_active
             else ""
         )
+        sample_logo_exclusion_contract = (
+            "SAMPLE LOGO EXCEPTION: when following the selected sample page, copy only the empty logo-safe zone geometry and surrounding whitespace. "
+            "Do not copy the sample page's logo artwork, wordmark, brand name, logo colors, logo symbol cluster, or any top-corner brand mark; that area must stay blank because the exact stored logo is overlaid after generation."
+            if style_reference_sample_active
+            else ""
+        )
         sample_editorial_render_contract = ""
         if style_reference_sample_active:
             sample_editorial_parts = [
@@ -22696,8 +22725,13 @@ class AIOrchestratorService:
             ),
             sample_primary_render_contract,
             sample_module_execution_contract,
+            sample_logo_exclusion_contract,
             f"Brand context only: {brand_name}. Use this for palette, tone, and approved copy context only, never as a logo, masthead, signature, watermark, or standalone brand mark.",
             f"LOGO RULE — no exceptions: the AI base creative must contain zero logos, wordmarks, brand-name signatures, monograms, watermarks, logo-like shapes, or brand marks anywhere in the slide image. Do not render, invent, stylize, or hint at any logo, initials, or brand identity element. The exact stored brand logo is applied as a separate asset after generation.",
+            *AIOrchestratorService._logo_non_generation_contract(
+                brand_name=brand_name,
+                reserved_logo_area=reserved_logo_area,
+            ),
             "Do not typeset the brand name as a top-corner signature.",
             f"The {reserved_logo_area} area is strictly reserved for the brand logo. Do not place any headline, body copy, supporting text, proof point, CTA, icon, or visual element inside or immediately adjacent to this corner.",
             logo_safe_zone_guidance,
@@ -23228,6 +23262,10 @@ class AIOrchestratorService:
 
         sections = [
             "Create a clean supporting visual aligned to the brand system.",
+            *AIOrchestratorService._logo_non_generation_contract(
+                brand_name=request.resolved_brand_context.get("brand_name") if isinstance(request.resolved_brand_context, dict) else "",
+                reserved_logo_area=reserved_logo_area,
+            ),
             f"LOGO RULE — no exceptions: do not render, invent, stylize, or hint at any logo, wordmark, monogram, brand mark, initials, or branded signature anywhere in the generated image. The exact stored brand logo is applied as a separate overlay after generation — never recreate it.",
             f"The {reserved_logo_area} area is strictly reserved for the brand logo. Do not place any icon, illustration element, text, or visual detail inside or immediately adjacent to this corner.",
             logo_safe_zone_guidance,

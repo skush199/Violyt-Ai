@@ -231,3 +231,20 @@ def test_research_editorial_planning_marks_hard_fail_when_fresh_research_is_requ
 
     assert brief["research_guard"]["strict_mode"] is True
     assert brief["research_guard"]["hard_fail"] is True
+
+
+def test_research_editorial_planning_allows_qualitative_inflation_prompt_when_research_unavailable() -> None:
+    brief = ResearchEditorialPlanningService().build(
+        prompt='Create a LinkedIn carousel on how inflation quietly erodes savings and real returns. Angle: a sharp reminder for people who think parking money in savings is "safe."',
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        knowledge_brief=[],
+        live_research={"status": "unavailable", "summary": "", "verified_facts": [], "ranked_sources": []},
+    )
+
+    assert brief["research_guard"]["strict_mode"] is True
+    assert brief["research_guard"]["requires_fresh_research"] is True
+    assert brief["research_guard"]["requires_blocking_research"] is False
+    assert brief["research_guard"]["hard_fail"] is False

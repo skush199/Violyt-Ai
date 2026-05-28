@@ -27,6 +27,13 @@ class ResearchEditorialPlanningService:
         r")\b",
         re.IGNORECASE,
     )
+    EXACT_RESEARCH_REQUEST_PATTERN = re.compile(
+        r"\b("
+        r"exact|specific|latest data|current data|current numbers?|latest numbers?|statistics?|stats?|"
+        r"percentage|percentages|benchmark|benchmarks|rankings?|market data|source-backed|verified facts?"
+        r")\b",
+        re.IGNORECASE,
+    )
     PRACTICAL_FINANCE_JOURNEY_PATTERN = re.compile(
         r"\b("
         r"retirement|retire|40s|corpus|net worth|monthly surplus|annual expense|inflation adjusted|"
@@ -300,6 +307,11 @@ class ResearchEditorialPlanningService:
         research_status: str,
     ) -> dict[str, Any]:
         requires_fresh_research = bool(self.RESEARCH_SIGNAL_PATTERN.search(prompt_text))
+        requires_blocking_research = bool(
+            self.TIMELY_RESEARCH_SIGNAL_PATTERN.search(prompt_text)
+            or self.EXACT_CLAIM_PATTERN.search(prompt_text)
+            or self.EXACT_RESEARCH_REQUEST_PATTERN.search(prompt_text)
+        )
         strict = bool(active and requires_fresh_research)
         # "unavailable" means a search backend IS configured but the runtime fetch failed.
         # "not_configured" means no backend is set up at all — that is not a failure, so
@@ -307,6 +319,7 @@ class ResearchEditorialPlanningService:
         # does not block generation.
         hard_fail = bool(
             strict
+            and requires_blocking_research
             and research_status == "unavailable"
             and not verified_facts
             and not ranked_source_pack
@@ -319,6 +332,7 @@ class ResearchEditorialPlanningService:
         return {
             "strict_mode": strict,
             "requires_fresh_research": requires_fresh_research,
+            "requires_blocking_research": requires_blocking_research,
             "hard_fail": hard_fail,
             "reason": reason,
         }

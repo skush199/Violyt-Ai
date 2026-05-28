@@ -713,6 +713,9 @@ def test_orchestrator_build_carousel_slide_render_prompt_uses_slide_or_planning_
     assert "Do not typeset the brand name as a top-corner signature" in prompt
     assert "Brand context only: Jiraaf" in prompt
     assert "must contain zero logos, wordmarks, brand-name signatures" in prompt
+    assert "Never write or paint Jiraaf in the logo-safe corner" in prompt
+    assert "must remain pure background reservation only" in prompt
+    assert "no ghosted wordmark" in prompt
     assert "Canvas fit: design for the requested 1080x1080 square output ratio" in prompt
     assert "do not let bottom buttons, bullets, or lower text touch or cross the crop boundary" in prompt
 
@@ -2283,8 +2286,11 @@ def test_orchestrator_build_final_render_prompt_reserves_logo_zone_and_forbids_g
     assert "top-right" in prompt
     assert "Brand context only: Jiraaf" in prompt
     assert "must contain zero logos, wordmarks, brand-name signatures" in prompt
-    assert "exact stored logo will be applied afterward as-is" in prompt
-    assert "Do not place the brand name as a top-corner signature" in prompt
+    assert "exact stored brand logo is composited afterward as a separate asset" in prompt
+    assert "never as a logo, masthead, signature, watermark, standalone brand mark, or top-corner wordmark" in prompt
+    assert "Never write or paint Jiraaf in the logo-safe corner" in prompt
+    assert "must remain pure background reservation only" in prompt
+    assert "no ghosted wordmark" in prompt
     assert "transparent edges" in prompt
 
 
@@ -4501,6 +4507,15 @@ def test_build_carousel_slide_render_prompt_includes_strict_sample_layout_contra
         message_strategy=None,
         slide=slide,
         scene_graph=scene_graph,
+        reference_images=[
+            {
+                "asset_id": "fta-sample",
+                "asset_role": "reference_creative",
+                "storage_path": "tenant/reference/FTA-3.pdf",
+                "mime_type": "application/pdf",
+                "metadata": {"conditioning_page_index": 1, "label": "FTA (3)"},
+            }
+        ],
         compiled_context={},
     )
 
@@ -4513,6 +4528,9 @@ def test_build_carousel_slide_render_prompt_includes_strict_sample_layout_contra
     assert '"financial_objects":["trade corridors"]' in prompt
     assert '"closing_style":"reflective_close"' in prompt
     assert "match the sample's zone counts, image count, text density, section partitions, spacing geometry, image style, color discipline, and closing grammar" in prompt
+    assert "SAMPLE LOGO EXCEPTION" in prompt
+    assert "copy only the empty logo-safe zone geometry" in prompt
+    assert "Do not copy the sample page's logo artwork" in prompt
 
 
 def test_build_carousel_slide_render_prompt_ignores_contaminated_sample_metadata_for_style_reference_only() -> None:
@@ -5499,6 +5517,34 @@ def test_sample_output_similarity_deferred_logo_overlay_does_not_penalize_brand_
     assert "premium_brand_finish_score_drift" not in report["issues"]
     assert report["post_generation_overlays_expected"]["exact_logo"] is True
     assert report["retry_recommended"] is False
+
+
+def test_sample_output_similarity_retries_when_ai_generates_logo_before_deferred_overlay() -> None:
+    sample_blueprint = {
+        "layout_category": "card_callout_grid",
+        "density": "balanced",
+        "module_counts": {"card_like_count": 3, "small_icon_like_count": 3, "logo_count": 1},
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": False, "table_allowed": False},
+        "premium_quality": {"brand_finish_score": 8.0},
+    }
+    output_blueprint = {
+        "layout_category": "card_callout_grid",
+        "density": "balanced",
+        "module_counts": {"card_like_count": 3, "small_icon_like_count": 3, "logo_count": 1},
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": False, "table_allowed": False},
+        "premium_quality": {"brand_finish_score": 8.0},
+    }
+
+    report = AIOrchestratorService._sample_output_similarity_report(
+        sample_blueprint=sample_blueprint,
+        output_blueprint=output_blueprint,
+        exact_logo_overlay_deferred=True,
+    )
+
+    assert "ai_generated_logo_or_wordmark_detected" in report["issues"]
+    assert "ai_generated_logo_or_wordmark_detected" in report["hard_retry_issues"]
+    assert report["retry_recommended"] is True
+    assert "must contain zero logos" in " ".join(report["corrections"])
 
 
 def test_merge_vision_page_blueprint_translates_ocr_craft_and_counts() -> None:

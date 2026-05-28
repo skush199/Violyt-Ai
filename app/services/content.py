@@ -8716,6 +8716,14 @@ class ContentService:
         contained = ImageOps.contain(logo, (inner_width, inner_height), method=Image.Resampling.LANCZOS)
         offset_x = x + max((width - contained.width) // 2, 0)
         offset_y = y + max((height - contained.height) // 2, 0)
+        # Clear the full reserved logo zone first. The image model can paint a
+        # larger ghost wordmark around the real logo footprint; clearing only the
+        # transparent-logo pixels leaves that fake mark visible after exact overlay.
+        base, logo_zone_clearance_applied = self._clear_ai_logo_overlay_region(
+            base,
+            logo_box,
+            format_name=str(studio_panel.get("format") or ""),
+        )
         compact_clearance_box = self._logo_footprint_clearance_box(
             image=base,
             offset_x=offset_x,
@@ -8733,6 +8741,7 @@ class ContentService:
             offset_y=offset_y,
             clear_box=compact_clearance_box,
         )
+        logo_clearance_zone_applied = logo_clearance_zone_applied or logo_zone_clearance_applied
         background_luminance = self._logo_box_background_luminance(base, logo_box)
         base.paste(contained, (offset_x, offset_y), contained)
 
