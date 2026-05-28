@@ -6097,7 +6097,10 @@ class AIOrchestratorService:
         validation_report: SceneGraphValidationReport,
         scene_graph: GenerationSceneGraph,
         compiled_context: dict[str, Any] | None = None,
+        style_reference_final_render_active: bool = False,
     ) -> bool:
+        if generation_path == "image_led_social" and style_reference_final_render_active:
+            return True
         return (
             generation_path == "image_led_social"
             and fresh_replan_attempted
@@ -7916,6 +7919,7 @@ class AIOrchestratorService:
             payload,
             request=request,
         )
+        payload["elements"] = self._clamp_normalized_scene_graph_bounds(payload.get("elements"))
         try:
             return GenerationSceneGraph.model_validate(payload)
         except ValidationError:
@@ -7942,6 +7946,40 @@ class AIOrchestratorService:
                 compiled_context=compiled_context,
                 allow_recovery=False,
             )
+
+    @classmethod
+    def _clamp_normalized_scene_graph_bounds(cls, elements: Any) -> list[dict[str, Any]]:
+        clamped_elements: list[dict[str, Any]] = []
+        for item in cls._coerce_list(elements):
+            if not isinstance(item, dict):
+                continue
+            element = dict(item)
+            geometry = dict(element.get("geometry") if isinstance(element.get("geometry"), dict) else {})
+            if str(geometry.get("units") or "normalized").strip().casefold() == "normalized":
+                try:
+                    x = float(geometry.get("x") if geometry.get("x") is not None else 0.0)
+                    y = float(geometry.get("y") if geometry.get("y") is not None else 0.0)
+                    width = float(geometry.get("width") if geometry.get("width") is not None else 0.01)
+                    height = float(geometry.get("height") if geometry.get("height") is not None else 0.01)
+                except (TypeError, ValueError):
+                    x, y, width, height = 0.0, 0.0, 0.01, 0.01
+                x = max(0.0, min(x, 0.99))
+                y = max(0.0, min(y, 0.99))
+                width = max(0.01, min(width, 1.0 - x))
+                height = max(0.01, min(height, 1.0 - y))
+                geometry.update(
+                    {
+                        "x": round(x, 4),
+                        "y": round(y, 4),
+                        "width": round(width, 4),
+                        "height": round(height, 4),
+                    }
+                )
+                element["geometry"] = geometry
+            if isinstance(element.get("elements"), list):
+                element["elements"] = cls._clamp_normalized_scene_graph_bounds(element.get("elements"))
+            clamped_elements.append(element)
+        return clamped_elements
 
     def _extract_scene_graph_source_elements(
         self,
@@ -11356,6 +11394,32 @@ class AIOrchestratorService:
         normalized = cls._normalize_metadata_text(text, limit=140).casefold()
         if not normalized:
             return True
+        if cls._text_has_cta_action(normalized):
+            return False
+        date_or_doc_terms = {
+            "agreement",
+            "as of",
+            "certificate",
+            "dated",
+            "document",
+            "effective",
+            "fta",
+            "free trade",
+            "memorandum",
+            "report",
+            "signed",
+        }
+        has_year_or_date = bool(re.search(r"\b(?:19|20)\d{2}\b|\b\d{1,2}\s+[a-z]{3,9}\s+(?:19|20)\d{2}\b", normalized))
+        if has_year_or_date and any(term in normalized for term in date_or_doc_terms):
+            return True
+        words = re.findall(r"[a-z0-9]+", normalized)
+        if len(words) <= 6 and any(term in normalized for term in date_or_doc_terms):
+            return True
+        return False
+
+    @classmethod
+    def _text_has_cta_action(cls, text: str) -> bool:
+        normalized = cls._normalize_metadata_text(text, limit=140).casefold()
         action_terms = {
             "apply",
             "book",
@@ -11384,32 +11448,27 @@ class AIOrchestratorService:
             "unlock",
             "visit",
         }
-        if any(term in normalized for term in action_terms):
-            return False
-        date_or_doc_terms = {
-            "agreement",
-            "as of",
-            "certificate",
-            "dated",
-            "document",
-            "effective",
-            "fta",
-            "free trade",
-            "memorandum",
-            "report",
-            "signed",
-        }
-        has_year_or_date = bool(re.search(r"\b(?:19|20)\d{2}\b|\b\d{1,2}\s+[a-z]{3,9}\s+(?:19|20)\d{2}\b", normalized))
-        if has_year_or_date and any(term in normalized for term in date_or_doc_terms):
-            return True
-        words = re.findall(r"[a-z0-9]+", normalized)
-        if len(words) <= 6 and any(term in normalized for term in date_or_doc_terms):
-            return True
+        for term in action_terms:
+            pattern = r"\b" + r"\s+".join(re.escape(part) for part in term.split()) + r"\b"
+            if re.search(pattern, normalized):
+                return True
         return False
 
     @classmethod
     def _blueprint_effective_cta_count(cls, blueprint: dict[str, Any]) -> int:
         blocks = cls._blueprint_ocr_blocks(blueprint)
+        raw_layout_category = cls._normalize_metadata_text(blueprint.get("layout_category"), limit=80).casefold()
+        product_or_closing_layouts = {
+            "closing_cta_or_product_surface",
+            "dashboard_or_product_surface",
+            "data_dashboard",
+            "product_surface",
+        }
+        layout_category = (
+            raw_layout_category
+            if raw_layout_category in product_or_closing_layouts
+            else (cls._sample_blueprint_layout_mode(blueprint) or raw_layout_category).casefold()
+        )
         cta_blocks = []
         for block in blocks:
             role = cls._normalize_metadata_text(block.get("role"), limit=48).casefold()
@@ -11418,12 +11477,22 @@ class AIOrchestratorService:
             w = cls._similarity_float(block.get("w"), default=0.0)
             role_marks_cta = "cta" in role or "button" in role or "call_to_action" in role
             bottom_marketing_region = y >= 0.70 and w >= 0.45 and role not in {"footer", "footer_legal", "legal", "logo"}
-            if (role_marks_cta or bottom_marketing_region) and not cls._text_looks_like_non_cta_label(text):
+            action_like_text = cls._text_has_cta_action(text)
+            if layout_category == "card_callout_grid":
+                cta_like = role_marks_cta and action_like_text
+            else:
+                button_like_role = role_marks_cta and (bottom_marketing_region or action_like_text)
+                cta_like = button_like_role or bottom_marketing_region
+            if cta_like and not cls._text_looks_like_non_cta_label(text):
                 cta_blocks.append(block)
         if blocks:
             return len(cta_blocks)
         counts = blueprint.get("module_counts") if isinstance(blueprint.get("module_counts"), dict) else {}
-        return max(int(counts.get("cta_count") or 0), 0)
+        fallback_cta_count = max(int(counts.get("cta_count") or 0), 0)
+        card_like_count = max(int(counts.get("card_like_count") or 0), 0)
+        if layout_category == "card_callout_grid" and card_like_count >= max(fallback_cta_count, 1):
+            return 0
+        return fallback_cta_count
 
     @classmethod
     def _sample_output_similarity_report(
@@ -11478,7 +11547,29 @@ class AIOrchestratorService:
         for key, label, tolerance in count_specs:
             expected = int(sample_counts.get(key) or 0)
             actual = int(output_counts.get(key) or 0)
+            if (
+                key == "card_like_count"
+                and effective_sample_category == "card_callout_grid"
+                and expected == 0
+                and actual > 0
+                and int(sample_counts.get("text_block_count") or 0) >= 3
+            ):
+                expected = max(1, min(int(sample_counts.get("text_block_count") or 0) - 1, 6))
             if key == "footer_band_count" and legal_footer_overlay_deferred and actual < expected:
+                count_scores.append(1.0)
+                continue
+            if (
+                key == "horizontal_band_count"
+                and effective_sample_category == "card_callout_grid"
+                and cls._layout_category_compatible(effective_sample_category, effective_output_category)
+                and int(sample_counts.get("card_like_count") or 0) > 0
+                and cls._count_similarity(
+                    int(sample_counts.get("card_like_count") or 0),
+                    int(output_counts.get("card_like_count") or 0),
+                    tolerance=1,
+                )
+                >= 0.58
+            ):
                 count_scores.append(1.0)
                 continue
             score = cls._count_similarity(expected, actual, tolerance=tolerance)
@@ -11618,11 +11709,20 @@ class AIOrchestratorService:
             score_parts.append(0.55)
 
         score = round(max(0.0, min(1.0, sum(score_parts) / max(len(score_parts), 1))), 2)
-        retry_recommended = score < cls.SAMPLE_SIMILARITY_ACCEPT_SCORE or bool(hard_retry_issues)
+        high_score_tolerable_hard_issues = {
+            "footer_band_count_drift",
+            "large_visual_count_drift",
+            "top_text_band_count_drift",
+        }
+        blocking_hard_retry_issues = set(hard_retry_issues)
+        if score >= 0.88 and blocking_hard_retry_issues <= high_score_tolerable_hard_issues:
+            blocking_hard_retry_issues = set()
+        retry_recommended = score < cls.SAMPLE_SIMILARITY_ACCEPT_SCORE or bool(blocking_hard_retry_issues)
         return {
             "score": score,
             "issues": issues,
             "hard_retry_issues": sorted(hard_retry_issues),
+            "blocking_hard_retry_issues": sorted(blocking_hard_retry_issues),
             "corrections": corrections[:8],
             "retry_recommended": retry_recommended,
             "sample_layout_category": sample_category,
@@ -11794,6 +11894,20 @@ class AIOrchestratorService:
             and horizontal_count >= 3
             and icon_count >= 2
             and (image_body_zone_count >= 2 or "icon" in must_match_text or "section" in must_match_text)
+        ):
+            return "vertical_icon_explainer"
+        if (
+            layout_category in {"cover_or_hero_visual", "photo_led_cover", "editorial_explainer"}
+            and large_visual_count == 0
+            and icon_count >= 3
+            and (
+                "vertical icon" in must_match_text
+                or "icons aligned" in must_match_text
+                or "icon linkage" in must_match_text
+                or "body block" in must_match_text
+                or "text right with icons" in must_match_text
+                or "icons aligned with body" in must_match_text
+            )
         ):
             return "vertical_icon_explainer"
         return layout_category
@@ -13426,6 +13540,8 @@ class AIOrchestratorService:
             validation_report=validation_report,
             scene_graph=scene_graph,
             compiled_context=compiled_context,
+            style_reference_final_render_active=self._style_reference_only_carousel_active(request, creative_decision)
+            and self._should_use_ai_final_render(request, generation_path, creative_decision),
         )
         final_render_scene_graph = scene_graph
         final_render_retry_note: str | None = None
@@ -14344,6 +14460,110 @@ class AIOrchestratorService:
         return " ".join(kept).strip()
 
     @classmethod
+    def _sample_contract_expected_module_min(cls, sample_contract: dict[str, Any]) -> int:
+        if not sample_contract:
+            return 0
+        copy_density = cls._normalize_metadata_text(
+            sample_contract.get("sample_page_copy_density"),
+            limit=32,
+        ).casefold()
+        behavior = cls._normalize_metadata_text(
+            sample_contract.get("sample_page_copy_behavior"),
+            limit=48,
+        ).casefold()
+        if copy_density == "high" or behavior in {"deal_mechanics", "curiosity_gap", "strategic_signal"}:
+            return 3
+        if copy_density == "medium":
+            return 2
+        return 0
+
+    @classmethod
+    def _sample_density_module_candidate_lines(
+        cls,
+        *,
+        slide: dict[str, Any],
+        metadata: dict[str, Any],
+        text_payload: StructuredTextPayload,
+        request: AIOrchestrationRequest,
+        compiled_context: dict[str, Any] | None,
+        sample_contract: dict[str, Any],
+        limit: int,
+    ) -> list[str]:
+        candidates: list[str] = []
+        for key in ("proof_points", "body_points", "stat_highlights"):
+            candidates.extend(cls._normalize_metadata_list(slide.get(key), limit=8))
+        candidates.extend(
+            cls._claim_evidence_pair_lines(
+                cls._normalize_claim_evidence_pairs(slide.get("claim_evidence_pairs"), limit=4),
+                limit=4,
+            )
+        )
+        for value in (slide.get("body"), slide.get("supporting_line")):
+            candidates.extend(cls._sentences(value)[:4])
+        for key in ("proof_points", "body_points", "stat_highlights"):
+            candidates.extend(cls._normalize_metadata_list(metadata.get(key), limit=8))
+        candidates.extend(
+            cls._claim_evidence_pair_lines(
+                cls._normalize_claim_evidence_pairs(metadata.get("claim_evidence_pairs"), limit=6),
+                limit=6,
+            )
+        )
+        for brief in (
+            request.research_editorial_brief,
+            (compiled_context or {}).get("research_editorial_brief") if isinstance(compiled_context, dict) else None,
+        ):
+            candidates.extend(cls._claim_evidence_pair_lines(cls._claim_evidence_pairs_from_research_brief(brief, limit=4), limit=4))
+        candidates.extend(cls._sentences(text_payload.body)[:6])
+
+        topic = cls._carousel_topic_label(request, limit=64)
+        role = cls._normalize_metadata_text(slide.get("slide_role") or slide.get("role"), limit=48).casefold().replace(" ", "_")
+        behavior = cls._normalize_metadata_text(sample_contract.get("sample_page_copy_behavior"), limit=48).casefold()
+        if behavior == "deal_mechanics":
+            candidates.extend(
+                [
+                    f"The mechanism matters more than the headline around {topic}.",
+                    f"Look at what {topic} changes in access, timing, or incentives.",
+                    f"The practical signal is in the clauses, not the announcement.",
+                ]
+            )
+        elif behavior in {"curiosity_gap", "curiosity_to_strategic_signal"}:
+            candidates.extend(
+                [
+                    f"The missed layer is what {topic} quietly changes underneath.",
+                    f"The obvious story is only the first read on {topic}.",
+                    f"The sharper question is what becomes possible next.",
+                ]
+            )
+        elif role in {"takeaway", "closing", "final", "strategic_meaning"} or behavior == "strategic_signal":
+            candidates.extend(
+                [
+                    f"The bigger signal is how {topic} shapes the next decision.",
+                    f"The takeaway is not urgency; it is a clearer planning lens.",
+                    f"Read the story as a long-term signal, not a one-day update.",
+                ]
+            )
+        else:
+            candidates.extend(
+                [
+                    f"The first-order story around {topic} is only one layer.",
+                    f"The real value is in what changes next.",
+                    f"Turn the headline into a sharper decision lens.",
+                ]
+            )
+
+        blocked_texts = [slide.get("headline"), slide.get("supporting_line"), slide.get("body"), slide.get("cta")]
+        cleaned: list[str] = []
+        for line in cls._dedupe_metadata_collection(candidates, blocked_texts=blocked_texts, limit=max(limit * 3, 8)):
+            if cls._line_is_research_process_filler(line):
+                continue
+            if cls._is_product_cta_like_line(line, request=request):
+                continue
+            cleaned.append(line)
+            if len(cleaned) >= limit:
+                break
+        return cleaned
+
+    @classmethod
     def _sample_contract_allows_product_cta(cls, sample_contract: dict[str, Any]) -> bool:
         if not sample_contract:
             return True
@@ -14396,6 +14616,38 @@ class AIOrchestratorService:
             metadata=metadata,
         )
         changed = False
+        unsupported_global_markers = cls._unsupported_exact_claim_markers(
+            " ".join(
+                [
+                    cls._coerce_text_value(payload.get("headline")),
+                    cls._coerce_text_value(payload.get("body")),
+                    cls._coerce_text_value(payload.get("cta")),
+                    " ".join(cls._normalize_metadata_list(metadata.get("proof_points"), limit=8)),
+                    " ".join(cls._normalize_metadata_list(metadata.get("stat_highlights"), limit=8)),
+                    " ".join(cls._normalize_metadata_list(metadata.get("trust_builders"), limit=8)),
+                    " ".join(
+                        cls._claim_evidence_pair_lines(
+                            cls._normalize_claim_evidence_pairs(metadata.get("claim_evidence_pairs"), limit=8),
+                            limit=8,
+                        )
+                    ),
+                ]
+            ),
+            request=request,
+            compiled_context=compiled_context,
+        )
+        if unsupported_global_markers:
+            for key in ("proof_points", "stat_highlights", "trust_builders"):
+                values = cls._normalize_metadata_list(metadata.get(key), limit=8)
+                filtered = [line for line in values if not cls._text_contains_unsupported_marker(line, unsupported_global_markers)]
+                if filtered != values:
+                    metadata[key] = filtered
+                    changed = True
+            for key in ("body", "cta"):
+                cleaned = cls._remove_unsupported_exact_claim_lines(payload.get(key), unsupported_global_markers)
+                if cleaned != cls._coerce_text_value(payload.get(key)):
+                    payload[key] = cleaned
+                    changed = True
         for index, slide in enumerate(slides, start=1):
             sample_contract = cls._sample_editorial_contract_for_slide(
                 request=request,
@@ -14450,6 +14702,45 @@ class AIOrchestratorService:
                 if cleaned_items != slide.get(key):
                     slide[key] = cleaned_items
                     changed = True
+
+            expected_module_min = cls._sample_contract_expected_module_min(sample_contract)
+            normalized_role = cls._normalize_metadata_text(
+                slide.get("slide_role") or slide.get("role"),
+                limit=48,
+            ).casefold().replace(" ", "_")
+            if (
+                template_surface_policy == "style_reference_only"
+                and expected_module_min
+                and normalized_role not in {"hook", "cover", "opening"}
+            ):
+                existing_module_lines = cls._carousel_slide_visible_module_lines(slide, limit=8)
+                if len(existing_module_lines) < expected_module_min:
+                    needed = expected_module_min - len(existing_module_lines)
+                    candidates = cls._sample_density_module_candidate_lines(
+                        slide=slide,
+                        metadata=metadata,
+                        text_payload=text_payload,
+                        request=request,
+                        compiled_context=compiled_context,
+                        sample_contract=sample_contract,
+                        limit=expected_module_min + 3,
+                    )
+                    body_points = cls._normalize_metadata_list(slide.get("body_points"), limit=8)
+                    seen = {item.casefold() for item in [*existing_module_lines, *body_points]}
+                    added = 0
+                    for candidate in candidates:
+                        key = candidate.casefold()
+                        if key in seen:
+                            continue
+                        body_points.append(candidate)
+                        seen.add(key)
+                        added += 1
+                        if added >= needed:
+                            break
+                    if added:
+                        slide["body_points"] = body_points[:8]
+                        slide["sample_density_preflight_filled"] = True
+                        changed = True
 
             unsupported = cls._unsupported_exact_claim_markers(
                 " ".join(
@@ -14817,9 +15108,7 @@ class AIOrchestratorService:
                             slide_targets=[raw_story_role or f"slide_{index}"],
                         )
                     )
-                raw_copy_density = cls._normalize_metadata_text(raw_sample_contract.get("sample_page_copy_density"), limit=32).casefold()
-                raw_behavior = cls._normalize_metadata_text(raw_sample_contract.get("sample_page_copy_behavior"), limit=48).casefold()
-                raw_expected_module_min = 3 if raw_copy_density == "high" or raw_behavior in {"deal_mechanics", "curiosity_gap"} else 2 if raw_copy_density == "medium" else 0
+                raw_expected_module_min = cls._sample_contract_expected_module_min(raw_sample_contract)
                 if (
                     template_surface_policy == "style_reference_only"
                     and raw_expected_module_min
@@ -15985,6 +16274,28 @@ class AIOrchestratorService:
             request=request,
             compiled_context=compiled_context,
         )
+        style_reference_final_render_active = (
+            self._style_reference_only_carousel_active(request, creative_decision)
+            and self._should_use_ai_final_render(request, generation_path, creative_decision)
+        )
+        if style_reference_final_render_active and validation_report.status != "clean":
+            self._trace_payload(
+                trace_id,
+                self.trace,
+                "scene_graph_validation_deferred_to_style_reference_final_render",
+                {
+                    "reason": "style_reference_only_carousel_uses_sample_conditioned_final_render",
+                    "deferred_issues": [issue.rule_id for issue in validation_report.issues],
+                },
+            )
+            validation_report = SceneGraphValidationReport(
+                status="clean",
+                issues=[],
+                summary=[
+                    "Scene graph validation deferred because style-reference carousel final render uses selected sample pages as the layout authority."
+                ],
+                repairable=False,
+            )
 
         # Track quality history for circuit breaker
         repair_quality_history: list[float] = []
@@ -16396,6 +16707,8 @@ class AIOrchestratorService:
             validation_report=validation_report,
             scene_graph=scene_graph,
             compiled_context=compiled_context,
+            style_reference_final_render_active=self._style_reference_only_carousel_active(request, creative_decision)
+            and self._should_use_ai_final_render(request, generation_path, creative_decision),
         )
         final_render_scene_graph = scene_graph
         final_render_retry_note: str | None = None
@@ -18413,6 +18726,7 @@ class AIOrchestratorService:
             blocked_texts=[
                 slide.get("headline"),
                 slide.get("supporting_line"),
+                slide.get("body"),
                 slide.get("cta"),
             ],
             limit=normalized_limit,
@@ -21980,6 +22294,13 @@ class AIOrchestratorService:
                 + AIOrchestratorService._sample_blueprint_layout_instruction(sample_page_blueprint)
                 + " Render one concise approved factual line per observed icon/text module."
             )
+        elif style_reference_sample_active and sample_layout_mode == "editorial_explainer":
+            story_role_visual_execution = (
+                "Execution guidance from selected sample page: "
+                + AIOrchestratorService._sample_blueprint_layout_instruction(sample_page_blueprint)
+                + " Preserve the editorial explainer structure: large visual region(s), supporting text blocks, and explanatory hierarchy must stay distinct. "
+                "Do not convert this page into a card grid, numbered list, dashboard, product surface, or generic finance poster."
+            )
         elif closing_sample_disallows_product:
             story_role_visual_execution = (
                 "Execution guidance from selected sample page: preserve the sample's macro-takeaway closing grammar. "
@@ -22030,7 +22351,20 @@ class AIOrchestratorService:
                     ),
                 )
             elif sample_layout_mode == "vertical_icon_explainer":
-                proof_points_limit = max(3, min(int(counts.get("horizontal_band_count") or 3), 4))
+                proof_points_limit = max(
+                    3,
+                    min(
+                        int(
+                            counts.get("horizontal_band_count")
+                            or counts.get("small_icon_like_count")
+                            or counts.get("text_block_count")
+                            or 3
+                        ),
+                        5,
+                    ),
+                )
+            elif sample_layout_mode == "editorial_explainer":
+                proof_points_limit = max(2, min(int(counts.get("text_block_count") or 3), 5))
         sample_module_execution_contract = ""
         if style_reference_sample_active and sample_page_blueprint:
             counts = sample_page_blueprint.get("module_counts") if isinstance(sample_page_blueprint.get("module_counts"), dict) else {}
@@ -22051,11 +22385,58 @@ class AIOrchestratorService:
                     "Topic concepts such as people, mobility, products, screens, documents, or market objects must be translated into small module-level icons or card illustrations unless the selected sample page itself has a large standalone visual."
                 )
             elif sample_layout_mode == "vertical_icon_explainer":
-                node_count = max(1, min(int(counts.get("horizontal_band_count") or proof_points_limit or 3), 6))
+                node_count = max(
+                    1,
+                    min(
+                        int(
+                            counts.get("horizontal_band_count")
+                            or counts.get("small_icon_like_count")
+                            or counts.get("text_block_count")
+                            or proof_points_limit
+                            or 3
+                        ),
+                        6,
+                    ),
+                )
                 sample_module_execution_contract = (
                     f"SAMPLE MODULE COUNT LOCK: render exactly {node_count} visible icon/text node(s) in the selected sample page's observed flow. "
-                    "Do not replace the node sequence with a standalone hero scene, screen mockup, chart, or generic finance motif. "
+                    "Each node must keep its own icon/mark plus adjacent body text in the sample's observed alignment, connector/path/stack rhythm, and CTA/footer posture. "
+                    "Do not replace the node sequence with a standalone hero scene, closing-product panel, screen mockup, chart, table, metric dashboard, or generic finance motif. "
                     "Keep topic imagery inside the observed node/icon structure unless the selected sample page has a large standalone visual."
+                )
+            elif sample_layout_mode in {"cover_or_hero_visual", "photo_led_cover"} and (
+                int(counts.get("horizontal_band_count") or 0) >= 3
+                or (
+                    int(counts.get("card_like_count") or 0) >= 1
+                    and int(counts.get("small_icon_like_count") or 0) >= 3
+                )
+            ):
+                internal_count = max(
+                    1,
+                    min(
+                        int(
+                            counts.get("horizontal_band_count")
+                            or counts.get("card_like_count")
+                            or counts.get("small_icon_like_count")
+                            or proof_points_limit
+                            or 3
+                        ),
+                        6,
+                    ),
+                )
+                sample_module_execution_contract = (
+                    f"SAMPLE MODULE COUNT LOCK: preserve the cover page's {internal_count} internal content band/module area(s) while keeping the observed hero/cover frame. "
+                    "Do not flatten the page into a single illustration, chart, graph, dashboard, poster, or generic finance visual. "
+                    "If the sample has a notebook/body block, icon list, or CTA band inside the cover composition, keep those internal structures visible and aligned."
+                )
+            elif sample_layout_mode == "editorial_explainer":
+                visual_count = max(1, min(int(counts.get("large_visual_count") or 1), 4))
+                text_count = max(1, min(int(counts.get("text_block_count") or proof_points_limit or 3), 6))
+                sample_module_execution_contract = (
+                    f"SAMPLE MODULE COUNT LOCK: preserve the selected sample page's editorial explainer structure with about {visual_count} large visual region(s) and {text_count} explanatory text block(s). "
+                    "Keep the visual region(s), headline/support/body hierarchy, and explanatory text areas separated in the same spatial rhythm as the sample. "
+                    "Do not convert this editorial explainer into a card/callout grid, row list, CTA/product panel, dashboard, chart, or generic poster. "
+                    "If topic concepts need icons or data, place them inside the observed editorial visual/text regions rather than creating new card modules."
                 )
             elif large_visual_count <= 0 and sample_layout_mode not in {"cover_or_hero_visual", "photo_led_cover"}:
                 sample_module_execution_contract = (

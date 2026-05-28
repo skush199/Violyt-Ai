@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 from PIL import Image
 
-from app.ai.contracts import AIOrchestrationRequest, CreativeDecisionPayload, GenerationSceneGraph, MessageStrategyPayload, SceneGraphValidationReport, StructuredTextPayload
+from app.ai.contracts import AIOrchestrationRequest, CreativeDecisionPayload, GenerationSceneGraph, MessageStrategyPayload, SceneGraphValidationIssue, SceneGraphValidationReport, StructuredTextPayload
 from app.ai.orchestrator import AIOrchestratorService
 from app.core.config import get_settings
 from app.core.exceptions import GenerationFailureError, LifecycleError
@@ -4073,6 +4073,45 @@ def test_orchestrator_build_carousel_slide_render_prompt_uses_story_role_body_an
     assert "do not render any readable words" in prompt.lower()
 
 
+def test_style_reference_final_render_ignores_sparse_scene_graph_without_fresh_replan() -> None:
+    scene_graph = GenerationSceneGraph.model_validate(
+        {
+            "canvas": {"width": 1080, "height": 1350, "platform": "linkedin", "file_type": "png"},
+            "layout_mode": "adapted_template",
+            "elements": [
+                {
+                    "element_id": "body",
+                    "element_type": "text",
+                    "role": "body",
+                    "geometry": {"x": 0.1, "y": 0.2, "width": 0.8, "height": 0.1},
+                    "text": "Sample-driven final render copy.",
+                }
+            ],
+        }
+    )
+    validation_report = SceneGraphValidationReport(
+        status="needs_repair",
+        issues=[
+            SceneGraphValidationIssue(
+                severity="error",
+                rule_id="missing_headline",
+                message="Scene graph must include a visible headline element.",
+            )
+        ],
+        summary=["Scene graph must include a visible headline element."],
+        repairable=True,
+    )
+
+    assert AIOrchestratorService._should_ignore_scene_graph_for_final_render(
+        generation_path="image_led_social",
+        fresh_replan_attempted=False,
+        validation_report=validation_report,
+        scene_graph=scene_graph,
+        compiled_context={},
+        style_reference_final_render_active=True,
+    ) is True
+
+
 def test_orchestrator_build_carousel_slide_render_prompt_includes_legal_footer_when_present() -> None:
     request = AIOrchestrationRequest(
         tenant_id=uuid4(),
@@ -5020,6 +5059,126 @@ def test_sample_output_similarity_uses_effective_layout_mode_from_module_counts(
     assert "footer_band_count_drift" not in report["issues"]
 
 
+def test_sample_output_similarity_does_not_repair_card_grid_for_row_or_cta_false_positive() -> None:
+    sample_blueprint = {
+        "layout_category": "cover_or_hero_visual",
+        "density": "airy",
+        "module_counts": {
+            "horizontal_band_count": 0,
+            "card_like_count": 3,
+            "large_visual_count": 1,
+            "small_icon_like_count": 3,
+            "top_text_band_count": 1,
+            "footer_band_count": 0,
+            "text_block_count": 3,
+            "cta_count": 0,
+        },
+        "visual_permissions": {
+            "chart_or_graph_allowed": False,
+            "table_allowed": False,
+            "dashboard_allowed": False,
+            "metric_tiles_allowed": False,
+            "cta_allowed": False,
+        },
+        "must_match": ["centered hero layout", "headline dominant", "simple iconography"],
+        "ocr_structure": {
+            "readable_text_blocks": 4,
+            "block_summary": [
+                {"role": "headline", "text_excerpt": "Which Bond Strategy Suits Your Goal?", "x": 0.19, "y": 0.14, "w": 0.62, "h": 0.14},
+                {"role": "body", "text_excerpt": "Barbell Strategy", "x": 0.23, "y": 0.42, "w": 0.23, "h": 0.08},
+                {"role": "body", "text_excerpt": "Ladder Strategy", "x": 0.55, "y": 0.49, "w": 0.22, "h": 0.08},
+                {"role": "body", "text_excerpt": "Bullet Strategy", "x": 0.43, "y": 0.67, "w": 0.23, "h": 0.08},
+            ],
+        },
+    }
+    output_blueprint = {
+        "layout_category": "cover_or_hero_visual",
+        "density": "airy",
+        "module_counts": {
+            "horizontal_band_count": 3,
+            "card_like_count": 3,
+            "large_visual_count": 0,
+            "small_icon_like_count": 3,
+            "top_text_band_count": 1,
+            "footer_band_count": 0,
+            "text_block_count": 4,
+            "cta_count": 0,
+        },
+        "visual_permissions": {
+            "chart_or_graph_allowed": False,
+            "table_allowed": False,
+            "dashboard_allowed": False,
+            "metric_tiles_allowed": False,
+            "cta_allowed": True,
+        },
+        "ocr_structure": {
+            "readable_text_blocks": 4,
+            "block_summary": [
+                {"role": "headline", "text_excerpt": "Is Your Savings Keeping Up With Inflation?", "x": 0.1, "y": 0.05, "w": 0.8, "h": 0.2},
+                {"role": "body", "text_excerpt": "Inflation quietly reduces your savings real value.", "x": 0.1, "y": 0.25, "w": 0.8, "h": 0.1},
+                {"role": "body", "text_excerpt": "U.S. inflation rate 2024: 2.95%", "x": 0.3, "y": 0.4, "w": 0.6, "h": 0.15},
+                {"role": "body", "text_excerpt": "Average savings account interest: 0.39% APY", "x": 0.3, "y": 0.72, "w": 0.6, "h": 0.1},
+            ],
+        },
+    }
+
+    report = AIOrchestratorService._sample_output_similarity_report(
+        sample_blueprint=sample_blueprint,
+        output_blueprint=output_blueprint,
+    )
+
+    assert report["effective_sample_layout_category"] == "card_callout_grid"
+    assert report["effective_output_layout_category"] == "card_callout_grid"
+    assert report["effective_output_cta_count"] == 0
+    assert "horizontal_band_count_drift" not in report["issues"]
+    assert "cta_grammar_invented" not in report["issues"]
+    assert "horizontal_band_count_drift" not in report["hard_retry_issues"]
+    assert "cta_grammar_invented" not in report["hard_retry_issues"]
+
+
+def test_sample_output_similarity_uses_text_blocks_when_card_grid_count_is_missing() -> None:
+    sample_blueprint = {
+        "layout_category": "card_callout_grid",
+        "density": "airy",
+        "module_counts": {
+            "horizontal_band_count": 1,
+            "card_like_count": 0,
+            "large_visual_count": 1,
+            "small_icon_like_count": 3,
+            "top_text_band_count": 1,
+            "footer_band_count": 0,
+            "text_block_count": 4,
+            "cta_count": 0,
+        },
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": False, "table_allowed": False},
+    }
+    output_blueprint = {
+        "layout_category": "card_callout_grid",
+        "density": "airy",
+        "module_counts": {
+            "horizontal_band_count": 0,
+            "card_like_count": 2,
+            "large_visual_count": 0,
+            "small_icon_like_count": 3,
+            "top_text_band_count": 1,
+            "footer_band_count": 0,
+            "text_block_count": 3,
+            "cta_count": 1,
+        },
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": True, "table_allowed": False},
+    }
+
+    report = AIOrchestratorService._sample_output_similarity_report(
+        sample_blueprint=sample_blueprint,
+        output_blueprint=output_blueprint,
+    )
+
+    assert report["effective_sample_layout_category"] == "card_callout_grid"
+    assert report["effective_output_layout_category"] == "card_callout_grid"
+    assert "card_like_count_drift" not in report["hard_retry_issues"]
+    assert report["retry_recommended"] is False
+
+
 def test_sample_output_similarity_allows_sample_row_list_when_table_not_allowed() -> None:
     sample_blueprint = {
         "layout_category": "numbered_or_icon_row_list",
@@ -5154,6 +5313,165 @@ def test_sample_output_similarity_flags_real_bottom_cta_as_hard_drift() -> None:
     assert "cta_grammar_invented" in report["hard_retry_issues"]
     assert report["effective_output_cta_count"] == 1
     assert report["retry_recommended"] is True
+
+
+def test_sample_output_similarity_does_not_count_card_grid_metric_cards_as_cta() -> None:
+    sample_blueprint = {
+        "layout_category": "card_callout_grid",
+        "density": "balanced",
+        "module_counts": {"card_like_count": 6, "small_icon_like_count": 6, "top_text_band_count": 2, "cta_count": 0},
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": False, "table_allowed": False},
+        "ocr_structure": {"block_summary": []},
+    }
+    output_blueprint = {
+        "layout_category": "card_callout_grid",
+        "density": "balanced",
+        "module_counts": {"card_like_count": 6, "small_icon_like_count": 6, "top_text_band_count": 2, "cta_count": 3},
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": True, "table_allowed": False},
+        "ocr_structure": {
+            "block_summary": [
+                {"role": "cta", "text_excerpt": "₹6.8L Cr FY25 Infra Investment", "x": 0.07, "y": 0.57, "w": 0.23, "h": 0.17},
+                {"role": "cta", "text_excerpt": "Understand the real premium not just the headline number", "x": 0.35, "y": 0.57, "w": 0.23, "h": 0.17},
+                {"role": "cta", "text_excerpt": "Understand the real risk premium not just the number", "x": 0.63, "y": 0.57, "w": 0.23, "h": 0.17},
+            ]
+        },
+    }
+
+    report = AIOrchestratorService._sample_output_similarity_report(
+        sample_blueprint=sample_blueprint,
+        output_blueprint=output_blueprint,
+    )
+
+    assert report["effective_output_cta_count"] == 0
+    assert "cta_grammar_invented" not in report["issues"]
+    assert report["retry_recommended"] is False
+
+
+def test_sample_output_similarity_does_not_count_card_grid_fallback_cta_count_without_ocr_evidence() -> None:
+    sample_blueprint = {
+        "layout_category": "card_callout_grid",
+        "density": "balanced",
+        "module_counts": {"card_like_count": 6, "small_icon_like_count": 6, "top_text_band_count": 2, "cta_count": 0},
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": False, "table_allowed": False},
+        "ocr_structure": {"block_summary": []},
+    }
+    output_blueprint = {
+        "layout_category": "card_callout_grid",
+        "density": "balanced",
+        "module_counts": {"card_like_count": 6, "small_icon_like_count": 6, "top_text_band_count": 2, "cta_count": 3},
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": True, "table_allowed": False},
+        "ocr_structure": {"block_summary": []},
+    }
+
+    report = AIOrchestratorService._sample_output_similarity_report(
+        sample_blueprint=sample_blueprint,
+        output_blueprint=output_blueprint,
+    )
+
+    assert report["effective_output_cta_count"] == 0
+    assert "cta_grammar_invented" not in report["issues"]
+    assert report["retry_recommended"] is False
+
+
+def test_sample_output_similarity_does_not_count_card_grid_bottom_tagline_as_cta() -> None:
+    sample_blueprint = {
+        "layout_category": "card_callout_grid",
+        "density": "balanced",
+        "module_counts": {"card_like_count": 6, "small_icon_like_count": 6, "cta_count": 0},
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": False, "table_allowed": False},
+        "ocr_structure": {"block_summary": []},
+    }
+    output_blueprint = {
+        "layout_category": "card_callout_grid",
+        "density": "balanced",
+        "module_counts": {"card_like_count": 6, "small_icon_like_count": 6, "cta_count": 1},
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": True, "table_allowed": False},
+        "ocr_structure": {
+            "block_summary": [
+                {"role": "body", "text_excerpt": "A smarter way to understand fixed-income opportunities", "x": 0.05, "y": 0.77, "w": 0.9, "h": 0.05}
+            ]
+        },
+    }
+
+    report = AIOrchestratorService._sample_output_similarity_report(
+        sample_blueprint=sample_blueprint,
+        output_blueprint=output_blueprint,
+    )
+
+    assert report["effective_output_cta_count"] == 0
+    assert "cta_grammar_invented" not in report["issues"]
+    assert report["retry_recommended"] is False
+
+
+def test_sample_output_similarity_accepts_high_score_with_only_large_visual_count_drift() -> None:
+    sample_blueprint = {
+        "layout_category": "cover_or_hero_visual",
+        "density": "airy",
+        "module_counts": {
+            "horizontal_band_count": 0,
+            "card_like_count": 0,
+            "large_visual_count": 0,
+            "small_icon_like_count": 3,
+            "top_text_band_count": 1,
+            "footer_band_count": 0,
+        },
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": True, "table_allowed": False},
+    }
+    output_blueprint = {
+        "layout_category": "cover_or_hero_visual",
+        "density": "airy",
+        "module_counts": {
+            "horizontal_band_count": 0,
+            "card_like_count": 0,
+            "large_visual_count": 1,
+            "small_icon_like_count": 3,
+            "top_text_band_count": 1,
+            "footer_band_count": 0,
+        },
+        "visual_permissions": {"dashboard_allowed": False, "cta_allowed": True, "table_allowed": False},
+    }
+
+    report = AIOrchestratorService._sample_output_similarity_report(
+        sample_blueprint=sample_blueprint,
+        output_blueprint=output_blueprint,
+    )
+
+    assert "large_visual_count_drift" in report["hard_retry_issues"]
+    assert report["blocking_hard_retry_issues"] == []
+    assert report["retry_recommended"] is False
+
+
+def test_sample_blueprint_layout_mode_treats_icon_linkage_cover_as_vertical_explainer() -> None:
+    blueprint = {
+        "layout_category": "cover_or_hero_visual",
+        "module_counts": {
+            "horizontal_band_count": 0,
+            "card_like_count": 0,
+            "large_visual_count": 0,
+            "small_icon_like_count": 3,
+        },
+        "must_match": ["split-screen layout", "vertical icon linkage", "text right with icons", "bottom cta band"],
+    }
+
+    assert AIOrchestratorService._sample_blueprint_layout_mode(blueprint) == "vertical_icon_explainer"
+
+
+def test_clamp_normalized_scene_graph_bounds_keeps_elements_inside_canvas() -> None:
+    elements = [
+        {
+            "element_id": "cta_overlay",
+            "element_type": "text",
+            "role": "cta",
+            "geometry": {"x": 0.1, "y": 0.85, "width": 0.8, "height": 0.2, "units": "normalized"},
+        }
+    ]
+
+    clamped = AIOrchestratorService._clamp_normalized_scene_graph_bounds(elements)
+
+    geometry = clamped[0]["geometry"]
+    assert geometry["y"] == 0.85
+    assert geometry["height"] == 0.15
+    assert geometry["y"] + geometry["height"] <= 1.0
 
 
 def test_sample_output_similarity_deferred_logo_overlay_does_not_penalize_brand_finish() -> None:
@@ -13285,6 +13603,96 @@ def test_carousel_render_prompt_locks_card_grid_against_topic_hero_scene() -> No
     assert len(prompt) <= AIOrchestratorService.CAROUSEL_IMAGE_PROMPT_MAX_LENGTH
 
 
+def test_carousel_render_prompt_locks_editorial_explainer_against_card_grid_drift() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Write a LinkedIn post about how inflation silently impacts your savings.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png", "size": {"width": 1080, "height": 1350}},
+        resolved_brand_context={"brand_name": "Jiraaf", "visual_identity": {"palette_roles": {"background": "#FFFFFF", "primary": "#003975", "secondary": "#FFA400"}}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={"sequence_pack": {"surface_policy": "style_reference_only", "slide_count": 5}},
+    )
+    slide = {
+        "role": "detail",
+        "headline": "Inflation changes the real value of savings",
+        "supporting_line": "The balance may look stable while purchasing power quietly moves.",
+        "proof_points": [
+            "A fixed cash balance buys less when prices rise",
+            "Returns need to be read after inflation",
+            "Time horizon decides how visible the impact becomes",
+        ],
+        "cta": "",
+        "slide_index": 4,
+        "slide_count": 5,
+        "metadata": {
+            "story_role": "strategic_meaning",
+            "reference_template_name": "Behavioural Biases",
+            "reference_slide_index": 4,
+            "reference_slide_count": 5,
+            "sample_page_editorial_role": "strategic_meaning",
+            "sample_page_copy_behavior": "insight_explainer",
+            "sample_page_copy_density": "medium_high",
+            "sample_page_blueprint": {
+                "layout_category": "editorial_explainer",
+                "module_counts": {
+                    "large_visual_count": 2,
+                    "text_block_count": 5,
+                    "card_like_count": 1,
+                    "horizontal_band_count": 0,
+                },
+                "visual_permissions": {
+                    "dashboard_allowed": False,
+                    "chart_or_graph_allowed": False,
+                    "table_allowed": False,
+                    "cta_allowed": False,
+                },
+                "must_match": ["large explanatory visual area", "stacked editorial text hierarchy"],
+            },
+        },
+    }
+
+    prompt = AIOrchestratorService.build_carousel_slide_render_prompt(
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            layout_mode="adapted_template",
+            asset_strategy={"use_generated_image": True, "template_surface_policy": "style_reference_only"},
+        ),
+        message_strategy=None,
+        slide=slide,
+        scene_graph=GenerationSceneGraph.model_validate(
+            {
+                "canvas": {"width": 1080, "height": 1350, "platform": "linkedin", "file_type": "png"},
+                "layout_mode": "adapted_template",
+                "elements": [],
+            }
+        ),
+        reference_images=[
+            {
+                "asset_id": "biases-sample",
+                "asset_role": "reference_creative",
+                "storage_path": "tenant/reference/Behavioural-Biases.pdf",
+                "mime_type": "application/pdf",
+                "metadata": {"conditioning_page_index": 4, "label": "Behavioural Biases"},
+            }
+        ],
+        compiled_context={},
+    )
+
+    assert "Execution guidance from selected sample page" in prompt
+    assert "Preserve the editorial explainer structure" in prompt
+    assert "SAMPLE MODULE COUNT LOCK: preserve the selected sample page's editorial explainer structure" in prompt
+    assert "2 large visual region(s)" in prompt
+    assert "5 explanatory text block(s)" in prompt
+    assert "Do not convert this editorial explainer into a card/callout grid" in prompt
+    assert "dashboard, chart" in prompt
+    assert "A fixed cash balance buys less when prices rise" in prompt
+    assert len(prompt) <= AIOrchestratorService.CAROUSEL_IMAGE_PROMPT_MAX_LENGTH
+
+
 def test_carousel_render_prompt_locks_icon_text_sections_from_cover_like_sample() -> None:
     blueprint = {
         "layout_category": "cover_or_hero_visual",
@@ -13307,6 +13715,169 @@ def test_carousel_render_prompt_locks_icon_text_sections_from_cover_like_sample(
 
     assert AIOrchestratorService._sample_blueprint_layout_mode(blueprint) == "vertical_icon_explainer"
     assert "observed icon/text explainer structure" in AIOrchestratorService._sample_blueprint_layout_instruction(blueprint)
+
+
+def test_carousel_render_prompt_locks_vertical_icon_nodes_without_horizontal_bands() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel on infrastructure investment themes.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png", "size": {"width": 1080, "height": 1350}},
+        resolved_brand_context={"brand_name": "Jiraaf", "visual_identity": {"palette_roles": {"background": "#FFFFFF", "primary": "#003975", "secondary": "#FFA400"}}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={"sequence_pack": {"surface_policy": "style_reference_only", "slide_count": 5}},
+    )
+    slide = {
+        "role": "closing",
+        "headline": "The signal is bigger than spend.",
+        "supporting_line": "Infrastructure capex is becoming a market-shaping lens.",
+        "proof_points": [
+            "Public capex anchors the cycle",
+            "Private capital follows execution clarity",
+            "Credit quality still decides outcomes",
+        ],
+        "cta": "Track the signal, not just the headline.",
+        "slide_index": 4,
+        "slide_count": 5,
+        "metadata": {
+            "story_role": "takeaway",
+            "reference_template_name": "Bond Analyzer",
+            "reference_slide_index": 4,
+            "reference_slide_count": 5,
+            "sample_page_editorial_role": "takeaway",
+            "sample_page_copy_behavior": "strategic_signal",
+            "sample_page_blueprint": {
+                "layout_category": "cover_or_hero_visual",
+                "module_counts": {
+                    "horizontal_band_count": 0,
+                    "large_visual_count": 0,
+                    "small_icon_like_count": 3,
+                    "text_block_count": 4,
+                    "cta_count": 1,
+                    "footer_band_count": 1,
+                },
+                "must_match": ["vertical icon linkage", "text right with icons", "bottom cta band"],
+                "visual_permissions": {"chart_or_graph_allowed": False, "table_allowed": False, "dashboard_allowed": False, "cta_allowed": True},
+            },
+        },
+    }
+
+    prompt = AIOrchestratorService.build_carousel_slide_render_prompt(
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            layout_mode="adapted_template",
+            asset_strategy={"use_generated_image": True, "template_surface_policy": "style_reference_only"},
+        ),
+        message_strategy=None,
+        slide=slide,
+        scene_graph=GenerationSceneGraph.model_validate(
+            {
+                "canvas": {"width": 1080, "height": 1350, "platform": "linkedin", "file_type": "png"},
+                "layout_mode": "adapted_template",
+                "elements": [],
+            }
+        ),
+        reference_images=[
+            {
+                "asset_id": "bond-sample",
+                "asset_role": "reference_creative",
+                "storage_path": "tenant/reference/Bond-Analyzer.pdf",
+                "mime_type": "application/pdf",
+                "metadata": {"conditioning_page_index": 4, "label": "Bond Analyzer"},
+            }
+        ],
+        compiled_context={},
+    )
+
+    assert "SAMPLE MODULE COUNT LOCK: render exactly 3 visible icon/text node(s)" in prompt
+    assert "Each node must keep its own icon/mark plus adjacent body text" in prompt
+    assert "closing-product panel" in prompt
+    assert "chart, table, metric dashboard" in prompt
+    assert "standalone hero scene" in prompt
+    assert len(prompt) <= AIOrchestratorService.CAROUSEL_IMAGE_PROMPT_MAX_LENGTH
+
+
+def test_carousel_render_prompt_locks_internal_modules_for_cover_like_sample() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a LinkedIn carousel on infrastructure investment themes.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png", "size": {"width": 1080, "height": 1350}},
+        resolved_brand_context={"brand_name": "Jiraaf", "visual_identity": {"palette_roles": {"background": "#FFFFFF", "primary": "#003975", "secondary": "#FFA400"}}},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={"sequence_pack": {"surface_policy": "style_reference_only", "slide_count": 5}},
+    )
+    slide = {
+        "role": "detail",
+        "headline": "Where the money is flowing",
+        "supporting_line": "Infrastructure spend is opening several investable themes.",
+        "proof_points": [
+            "Transport corridors anchor execution",
+            "Energy transition pulls private capital",
+            "Urban infrastructure widens the credit map",
+            "Execution quality separates signals from noise",
+        ],
+        "cta": "Look beyond headline capex.",
+        "slide_index": 2,
+        "slide_count": 5,
+        "metadata": {
+            "story_role": "mechanism",
+            "reference_template_name": "Bond Analyzer",
+            "reference_slide_index": 2,
+            "reference_slide_count": 5,
+            "sample_page_blueprint": {
+                "layout_category": "cover_or_hero_visual",
+                "module_counts": {
+                    "horizontal_band_count": 4,
+                    "card_like_count": 1,
+                    "large_visual_count": 1,
+                    "small_icon_like_count": 4,
+                    "text_block_count": 5,
+                    "cta_count": 1,
+                },
+                "must_match": ["notebook body block with icons", "solid cta button below"],
+                "visual_permissions": {"chart_or_graph_allowed": False, "table_allowed": False, "dashboard_allowed": False, "cta_allowed": True},
+            },
+        },
+    }
+
+    prompt = AIOrchestratorService.build_carousel_slide_render_prompt(
+        request=request,
+        creative_decision=CreativeDecisionPayload(
+            layout_mode="adapted_template",
+            asset_strategy={"use_generated_image": True, "template_surface_policy": "style_reference_only"},
+        ),
+        message_strategy=None,
+        slide=slide,
+        scene_graph=GenerationSceneGraph.model_validate(
+            {
+                "canvas": {"width": 1080, "height": 1350, "platform": "linkedin", "file_type": "png"},
+                "layout_mode": "adapted_template",
+                "elements": [],
+            }
+        ),
+        reference_images=[
+            {
+                "asset_id": "bond-sample",
+                "asset_role": "reference_creative",
+                "storage_path": "tenant/reference/Bond-Analyzer.pdf",
+                "mime_type": "application/pdf",
+                "metadata": {"conditioning_page_index": 2, "label": "Bond Analyzer"},
+            }
+        ],
+        compiled_context={},
+    )
+
+    assert "SAMPLE MODULE COUNT LOCK: preserve the cover page's 4 internal content band/module area(s)" in prompt
+    assert "Do not flatten the page into a single illustration, chart, graph, dashboard, poster" in prompt
+    assert "notebook/body block, icon list, or CTA band" in prompt
+    assert len(prompt) <= AIOrchestratorService.CAROUSEL_IMAGE_PROMPT_MAX_LENGTH
 
 
 def test_carousel_render_prompt_removes_product_cta_language_for_macro_sample_close() -> None:
@@ -15254,6 +15825,176 @@ def test_orchestrator_content_semantic_preflight_uses_selected_sample_editorial_
     assert slides[3]["headline"] == "Small deal. Bigger shape."
     assert slides[3]["cta"] == ""
     assert "carousel_research_process_filler" not in {issue["code"] for issue in cleaned_report["issues"]}
+
+
+def test_orchestrator_content_semantic_preflight_fills_sample_density_modules_before_repair() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt=(
+            "Write a LinkedIn post about how inflation silently impacts savings and purchasing power. "
+            "The goal is to create awareness around long-term financial planning."
+        ),
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        conversation_context={},
+        session_memory={},
+        resolved_brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+        template_context={
+            "sequence_pack": {
+                "surface_policy": "style_reference_only",
+                "slide_count": 5,
+                "slides": [
+                    {
+                        "slide_index": 1,
+                        "story_role": "hook",
+                        "sample_page_copy_density": "high",
+                        "sample_page_copy_behavior": "strategic_signal",
+                    },
+                    {
+                        "slide_index": 2,
+                        "story_role": "structure",
+                        "sample_page_copy_density": "high",
+                        "sample_page_copy_behavior": "strategic_signal",
+                    },
+                    {
+                        "slide_index": 3,
+                        "story_role": "structure",
+                        "sample_page_copy_density": "high",
+                        "sample_page_copy_behavior": "strategic_signal",
+                    },
+                    {
+                        "slide_index": 4,
+                        "story_role": "structure",
+                        "sample_page_copy_density": "high",
+                        "sample_page_copy_behavior": "strategic_signal",
+                    },
+                    {
+                        "slide_index": 5,
+                        "story_role": "takeaway",
+                        "sample_page_copy_density": "high",
+                        "sample_page_copy_behavior": "strategic_signal",
+                        "sample_page_closing_grammar": "macro_takeaway",
+                    },
+                ],
+            }
+        },
+    )
+    payload = StructuredTextPayload(
+        headline="Inflation and purchasing power",
+        body=(
+            "Inflation lowers what the same savings can buy over time. "
+            "Purchasing power erodes quietly before the account balance looks different. "
+            "Long-term planning helps turn a silent risk into visible choices."
+        ),
+        cta="",
+        hashtags=["#FinancialPlanning"],
+        metadata={
+            "hook_type": "problem-led",
+            "stat_highlights": [
+                "Inflation outpaces savings returns by ~2.5%",
+                "$10,000 at 0.39% APY earns only $39 annually",
+                "High-yield accounts offer up to 5% APY but with trade-offs",
+            ],
+            "claim_evidence_pairs": [
+                {
+                    "claim": "Inflation reduces purchasing power",
+                    "evidence": "User supplied awareness goal",
+                }
+            ],
+            "carousel_slide_specs": [
+                {
+                    "slide_number": 1,
+                    "slide_role": "hook",
+                    "headline": "Inflation is the quiet leak in your savings plan",
+                    "body": "The account balance can look stable while purchasing power moves in the other direction.",
+                    "proof_points": ["Purchasing power can fall even when savings stay untouched"],
+                    "visual_focus": "Sample-matched hook visual.",
+                    "cta": "",
+                },
+                {
+                    "slide_number": 2,
+                    "slide_role": "structure",
+                    "headline": "What actually changes",
+                    "body": "Everyday costs reset the real value of idle cash.",
+                    "body_points": [
+                        "The same amount buys less over time",
+                        "Short-term comfort can hide long-term erosion",
+                        "Planning horizon changes the right response",
+                    ],
+                    "visual_focus": "Sample-matched modules.",
+                    "cta": "",
+                },
+                {
+                    "slide_number": 3,
+                    "slide_role": "structure",
+                    "headline": "What most people miss",
+                    "body": "Inflation is not only a price story; it is a timing story.",
+                    "body_points": [
+                        "Idle money carries opportunity cost",
+                        "Goals with longer timelines need different treatment",
+                        "The risk compounds quietly",
+                    ],
+                    "visual_focus": "Sample-matched modules.",
+                    "cta": "",
+                },
+                {
+                    "slide_number": 4,
+                    "slide_role": "structure",
+                    "headline": "The planning lens",
+                    "body": "A quiet risk needs visible planning.",
+                    "body_points": [
+                        "Separate emergency money from long-term capital",
+                        "Match each goal to a time horizon",
+                    ],
+                    "visual_focus": "Sample-matched modules.",
+                    "cta": "",
+                },
+                {
+                    "slide_number": 5,
+                    "slide_role": "takeaway",
+                    "headline": "Small erosion. Bigger decision.",
+                    "body": (
+                        "A quiet risk needs visible planning. "
+                        "Better planning starts with separating emergency money from long-term capital. "
+                        "The point is not panic; it is discipline."
+                    ),
+                    "visual_focus": "Sample-matched closing modules.",
+                    "cta": "",
+                },
+            ],
+        },
+    )
+
+    raw_report = AIOrchestratorService._validate_content_semantics(
+        request=request,
+        text_payload=payload,
+        compiled_context={},
+    )
+    assert "carousel_raw_sample_density_drift" in {issue["code"] for issue in raw_report["issues"]}
+
+    cleaned = AIOrchestratorService._preflight_text_payload_semantics(
+        request=request,
+        text_payload=payload,
+        compiled_context={},
+    )
+    cleaned_report = AIOrchestratorService._validate_content_semantics(
+        request=request,
+        text_payload=cleaned,
+        compiled_context={},
+    )
+
+    slides = cleaned.metadata["carousel_slide_specs"]
+    assert slides[3]["sample_density_preflight_filled"] is True
+    assert slides[4]["sample_density_preflight_filled"] is True
+    assert len(AIOrchestratorService._carousel_slide_visible_module_lines(slides[3], limit=8)) >= 3
+    assert len(AIOrchestratorService._carousel_slide_visible_module_lines(slides[4], limit=8)) >= 3
+    assert "2.5%" not in " ".join(cleaned.metadata["stat_highlights"])
+    assert "5% APY" not in " ".join(cleaned.metadata["stat_highlights"])
+    assert "carousel_raw_sample_density_drift" not in {issue["code"] for issue in cleaned_report["issues"]}
 
 
 def test_orchestrator_content_semantic_validator_uses_sanitized_style_reference_visuals_before_repair() -> None:

@@ -58,7 +58,50 @@ class TemplateService:
         "to",
         "with",
         "x",
+        "about",
+        "break",
+        "breakdown",
+        "can",
+        "create",
+        "creating",
+        "focus",
+        "give",
+        "how",
+        "include",
+        "including",
+        "practical",
+        "show",
+        "smarter",
+        "structured",
+        "your",
         "jiraaf",
+    }
+    TEMPLATE_TOPIC_GENERIC_TOKENS = TEMPLATE_MATCH_STOPWORDS | {
+        "adaptation",
+        "brand",
+        "carousel",
+        "client",
+        "content",
+        "creative",
+        "document",
+        "format",
+        "guide",
+        "image",
+        "layout",
+        "page",
+        "pages",
+        "pdf",
+        "prompt",
+        "reference",
+        "sample",
+        "slide",
+        "slides",
+        "style",
+        "template",
+        "visual",
+        "working",
+        "professional",
+        "professionals",
     }
 
     def __init__(self, session: AsyncSession) -> None:
@@ -82,6 +125,45 @@ class TemplateService:
             for token in re.findall(r"[a-z0-9]+", text.lower())
             if len(token) > 2 and token not in TemplateService.TEMPLATE_MATCH_STOPWORDS
         }
+
+    @classmethod
+    def _specific_topic_tokens(cls, tokens: set[str]) -> set[str]:
+        specific: set[str] = set()
+        for token in tokens:
+            normalized = str(token or "").strip().lower()
+            if not normalized or normalized in cls.TEMPLATE_TOPIC_GENERIC_TOKENS:
+                continue
+            if len(normalized) <= 3 and not re.fullmatch(r"\d{2}s", normalized):
+                continue
+            specific.add(normalized)
+        return specific
+
+    @classmethod
+    def _collect_analysis_text_fragments(cls, value: Any, *, limit: int = 80) -> list[str]:
+        fragments: list[str] = []
+
+        def visit(item: Any) -> None:
+            if len(fragments) >= limit:
+                return
+            if isinstance(item, str):
+                text = item.strip()
+                if text:
+                    fragments.append(text)
+                return
+            if isinstance(item, dict):
+                for child in item.values():
+                    visit(child)
+                    if len(fragments) >= limit:
+                        return
+                return
+            if isinstance(item, (list, tuple)):
+                for child in item:
+                    visit(child)
+                    if len(fragments) >= limit:
+                        return
+
+        visit(value)
+        return fragments
 
     @staticmethod
     def _export_formats_for_template(storage_path: str) -> list[str]:
@@ -359,6 +441,7 @@ class TemplateService:
 
         return {
             "tokens": cls._tokenize(prompt),
+            "specific_tokens": cls._specific_topic_tokens(cls._tokenize(prompt)),
             "platform": studio_panel.get("platform_preset"),
             "format": studio_panel.get("format"),
             "file_type": studio_panel.get("file_type"),
@@ -468,6 +551,8 @@ class TemplateService:
             for pattern in matcher.get("content_patterns", []) or []
             if str(pattern).strip()
         }
+        analysis_text = " ".join(cls._collect_analysis_text_fragments(template.analysis_json))
+        matcher_text = " ".join(cls._collect_analysis_text_fragments(matcher))
         layout_type = str(
             matcher.get("layout_type")
             or (metadata.zone_map.get("layout_type") if metadata else "")
@@ -516,6 +601,8 @@ class TemplateService:
                     filter(
                         None,
                         [
+                            analysis_text,
+                            matcher_text,
                             str(template.analysis_json.get("extracted_text_preview") or ""),
                             str(template.analysis_json.get("heading") or ""),
                             str(template.analysis_json.get("header") or ""),
@@ -597,6 +684,8 @@ class TemplateService:
             if isinstance(score_breakdown, dict):
                 topical_fit = float(score_breakdown.get("keyword_overlap") or 0.0) + float(
                     score_breakdown.get("ocr_text_fit") or 0.0
+                ) + float(
+                    score_breakdown.get("topic_semantic_fit") or 0.0
                 )
             if topical_fit:
                 adaptation_score += min(topical_fit * 0.35, 3.0)
@@ -779,6 +868,7 @@ class TemplateService:
         reasons: list[str] = []
         breakdown = {
             "keyword_overlap": 0.0,
+            "topic_semantic_fit": 0.0,
             "ocr_text_fit": 0.0,
             "platform_fit": 0.0,
             "export_fit": 0.0,
@@ -830,6 +920,22 @@ class TemplateService:
             score += ocr_score
             breakdown["ocr_text_fit"] = ocr_score
             reasons.append(f"template text fit: {', '.join(sorted(ocr_overlap)[:5])}")
+        specific_prompt_tokens = prompt_signals.get("specific_tokens", set())
+        if isinstance(specific_prompt_tokens, set) and specific_prompt_tokens:
+            title_specific_overlap = specific_prompt_tokens & template_profile.get("title_tokens", set())
+            ocr_specific_overlap = specific_prompt_tokens & template_profile.get("ocr_tokens", set())
+            keyword_specific_overlap = specific_prompt_tokens & template_profile.get("tokens", set())
+            semantic_score = min(
+                (len(title_specific_overlap) * 3.0)
+                + (len(ocr_specific_overlap) * 2.2)
+                + (len(keyword_specific_overlap - title_specific_overlap - ocr_specific_overlap) * 1.0),
+                14.0,
+            )
+            if semantic_score:
+                score += semantic_score
+                breakdown["topic_semantic_fit"] = semantic_score
+                semantic_overlap = sorted(title_specific_overlap | ocr_specific_overlap | keyword_specific_overlap)
+                reasons.append(f"topic semantic fit: {', '.join(semantic_overlap[:6])}")
 
         platform = prompt_signals["platform"]
         format_name = prompt_signals["format"]

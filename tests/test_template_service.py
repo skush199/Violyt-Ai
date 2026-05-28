@@ -292,6 +292,99 @@ def test_adaptation_score_balances_carousel_topic_fit_and_page_count() -> None:
     assert five_slide_topical > seven_slide_generic
 
 
+def test_template_score_prefers_topic_relevant_retirement_carousel_over_generic_finance_samples() -> None:
+    tenant_id = uuid4()
+    brand_space_id = uuid4()
+    prompt = (
+        "Create a LinkedIn carousel on how your 40s can power a smarter retirement plan. "
+        "Break down retirement planning into practical steps including retirement corpus calculation, "
+        "inflation impact, investment scaling, and diversification. Focus on creating a structured "
+        "financial roadmap for working professionals in their 40s."
+    )
+    studio_panel = {"platform_preset": "linkedin", "format": "carousel", "file_type": "png"}
+
+    def _template(name: str, text: str, page_count: int) -> tuple[Template, TemplateMetadata]:
+        template = Template(
+            tenant_id=tenant_id,
+            brand_space_id=brand_space_id,
+            name=name,
+            kind="carousel",
+            storage_path=f"templates/{name}.pdf",
+            analysis_json={
+                "layout_type": "carousel",
+                "page_count": page_count,
+                "extracted_text_preview": text[:300],
+                "page_text": [{"text": text}],
+            },
+            matcher_features_json={"layout_type": "carousel", "content_patterns": ["explainer"]},
+            tags=["carousel"],
+        )
+        metadata = TemplateMetadata(
+            tenant_id=tenant_id,
+            brand_space_id=brand_space_id,
+            template_id=template.id,
+            zone_map={"layout_type": "carousel", "zones": [{"role": "headline"}, {"role": "body"}, {"role": "image"}]},
+            sizing_rules={"page_count": page_count},
+            platform_rules={"supported_platforms": ["linkedin"]},
+            editable_fields=["headline", "body", "image"],
+            export_rules={"supported_formats": ["png"]},
+        )
+        return template, metadata
+
+    retirement_template, retirement_metadata = _template(
+        "(Jiraaf) Planning your retirement",
+        "How Your 40s Can Power a Smarter Retirement Plan. Retirement corpus calculation. Inflation impact. Investment scaling. Diversification. Financial roadmap.",
+        6,
+    )
+    bond_template, bond_metadata = _template(
+        "Bond Analyzer",
+        "Bond investing is no longer just about looking at yields. Compare issuers, spreads, maturities, ratings, and debt market trends.",
+        5,
+    )
+    fta_template, fta_metadata = _template(
+        "FTA",
+        "India New Zealand trade deal. Tariffs, exports, imports, mobility, services, and investment clauses.",
+        4,
+    )
+
+    retirement_score, _, retirement_breakdown, retirement_plan, retirement_misses = TemplateService._score_template(
+        prompt, studio_panel, retirement_template, retirement_metadata, {}
+    )
+    bond_score, _, bond_breakdown, bond_plan, bond_misses = TemplateService._score_template(
+        prompt, studio_panel, bond_template, bond_metadata, {}
+    )
+    fta_score, _, fta_breakdown, fta_plan, fta_misses = TemplateService._score_template(
+        prompt, studio_panel, fta_template, fta_metadata, {}
+    )
+
+    retirement_adaptation = TemplateService._adaptation_score_for_recommendation(
+        requested_format_family="carousel",
+        template_profile=TemplateService._template_profile(retirement_template, retirement_metadata),
+        base_score=retirement_score,
+        match_type=TemplateService._match_type_for_score(retirement_score, retirement_plan, retirement_misses),
+        score_breakdown=retirement_breakdown,
+    )
+    bond_adaptation = TemplateService._adaptation_score_for_recommendation(
+        requested_format_family="carousel",
+        template_profile=TemplateService._template_profile(bond_template, bond_metadata),
+        base_score=bond_score,
+        match_type=TemplateService._match_type_for_score(bond_score, bond_plan, bond_misses),
+        score_breakdown=bond_breakdown,
+    )
+    fta_adaptation = TemplateService._adaptation_score_for_recommendation(
+        requested_format_family="carousel",
+        template_profile=TemplateService._template_profile(fta_template, fta_metadata),
+        base_score=fta_score,
+        match_type=TemplateService._match_type_for_score(fta_score, fta_plan, fta_misses),
+        score_breakdown=fta_breakdown,
+    )
+
+    assert retirement_breakdown["topic_semantic_fit"] > bond_breakdown["topic_semantic_fit"]
+    assert retirement_breakdown["topic_semantic_fit"] > fta_breakdown["topic_semantic_fit"]
+    assert retirement_adaptation > bond_adaptation
+    assert retirement_adaptation > fta_adaptation
+
+
 def test_calibrate_recommendation_confidence_keeps_ranked_carousel_matches_distinct() -> None:
     recommendations = [
         TemplateRecommendationResponse(

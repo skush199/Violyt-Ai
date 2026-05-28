@@ -2389,13 +2389,15 @@ class ContentService:
                 or metadata.get("layout_type")
                 or ("carousel" if page_count_value >= 3 else None)
             ) or ("carousel" if page_count_value >= 3 else "static")
+            confidence_base = 0.96 if page_count_value >= 3 else 0.88
+            decision_confidence = max(0.72, min(confidence_base - (index * 0.03), 0.96))
             recommendations.append(
                 {
                     "template_id": None,
                     "name": name,
                     "score": 100.0 - float(index),
                     "match_type": "adapted_template",
-                    "decision_confidence": 1.0,
+                    "decision_confidence": round(decision_confidence, 2),
                     "reasons": [
                         "explicit uploaded-sample authority request",
                         "using request-supplied reference asset as the primary planning anchor",
@@ -4442,7 +4444,8 @@ class ContentService:
                     ordered_lines = [str(item.get("text") or "").strip() for item in ordered_blocks if str(item.get("text") or "").strip()]
                     headline, supporting = merge_title_lines(ordered_lines)
                     sample_copy = clean_text(" ".join(ordered_lines))[:900]
-                    if ordered_lines:
+                    has_visual_content = bool(page.get_images(full=True) or page.get_drawings())
+                    if ordered_lines or has_visual_content:
                         hints.append(
                             {
                                 "page_index": page_index,
@@ -4450,6 +4453,7 @@ class ContentService:
                                 "supporting": supporting,
                                 "summary": sample_copy,
                                 "text_blocks": ordered_blocks[:12],
+                                "visual_only_page": bool(has_visual_content and not ordered_lines),
                             }
                         )
         except Exception:
@@ -4561,7 +4565,14 @@ class ContentService:
         if mime_type != "application/pdf" and Path(path_hint).suffix.lower() != ".pdf":
             return None
 
-        page_texts = cls._read_reference_pdf_pages(path_hint, storage=storage)
+        pdf_editorial_hints = cls._reference_pdf_page_editorial_hints(path_hint, storage=storage)
+        page_texts = [
+            str(hint.get("summary") or hint.get("headline") or "").strip()
+            for hint in pdf_editorial_hints
+            if isinstance(hint, dict)
+        ]
+        if len(page_texts) < 3:
+            page_texts = cls._read_reference_pdf_pages(path_hint, storage=storage)
         if len(page_texts) < 3:
             return None
 
@@ -4584,6 +4595,7 @@ class ContentService:
         slides: list[dict[str, Any]] = []
 
         for slide_index, page_text in enumerate(page_texts, start=1):
+            sample_editorial = pdf_editorial_hints[slide_index - 1] if slide_index - 1 < len(pdf_editorial_hints) else {}
             lines = [
                 re.sub(r"\s+", " ", line).strip(" \t-•")
                 for line in page_text.splitlines()
@@ -4603,6 +4615,10 @@ class ContentService:
                     title_candidate = sentence
 
             page_summary = re.sub(r"\s+", " ", page_text).strip()[:180]
+            if isinstance(sample_editorial, dict):
+                title_candidate = str(sample_editorial.get("headline") or title_candidate or "").strip()
+                lead_line = str(sample_editorial.get("supporting") or lead_line or "").strip()
+                page_summary = str(sample_editorial.get("summary") or page_summary or "").strip()[:180]
             hint_pool = [
                 title_candidate,
                 lead_line,
@@ -4659,6 +4675,11 @@ class ContentService:
                     "headline_hint": headline_hint,
                     "structural_cues": structural_cues[:4],
                     "sequence_summary": page_summary or sequence_summary,
+                    "sample_page_headline": str(sample_editorial.get("headline") or "").strip() if isinstance(sample_editorial, dict) else "",
+                    "sample_page_supporting": str(sample_editorial.get("supporting") or "").strip() if isinstance(sample_editorial, dict) else "",
+                    "sample_page_copy": str(sample_editorial.get("summary") or "").strip()[:900] if isinstance(sample_editorial, dict) else "",
+                    "sample_page_text_blocks": sample_editorial.get("text_blocks") if isinstance(sample_editorial, dict) else [],
+                    "sample_page_editorial_source": "pdf_visual_page" if isinstance(sample_editorial, dict) and sample_editorial.get("visual_only_page") else "pdf_text_blocks" if sample_editorial else "",
                 }
             )
 
