@@ -216,31 +216,47 @@ function resolveBrandScoring(payload: ChatAssistantStructuredPayload | Record<st
 }
 
 function ScorePill({ label, value }: { label: string; value: number }) {
+  const toneClass =
+    value >= 75
+      ? "border-primary/18 bg-primary/10 text-primary"
+      : value >= 55
+        ? "border-primary/14 bg-white text-primary"
+        : "border-primary/10 bg-white text-[#6C63A8]";
   return (
-    <div className="rounded-[18px] border border-slate-200 bg-slate-50 px-4 py-3">
-      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{label}</p>
-      <p className="mt-2 text-2xl font-semibold text-slate-900">{Math.round(value)}</p>
+    <div
+      className={`flex min-w-[118px] items-center justify-between gap-3 rounded-[16px] border px-3 py-2 shadow-[0_12px_24px_-24px_rgba(60,47,143,0.35)] ${toneClass}`}
+    >
+      <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">{label}</p>
+      <p className="text-base font-semibold text-slate-900">{Math.round(value)}</p>
     </div>
   );
 }
 
 function BrandScoringCard({ scoring }: { scoring: BrandScoringPayload }) {
+  const overallScore = Math.round(scoring.overall_score);
+  const overallToneClass =
+    overallScore >= 75
+      ? "border-primary/20 bg-primary text-white"
+      : overallScore >= 55
+        ? "border-primary/16 bg-primary/12 text-primary"
+        : "border-primary/12 bg-white text-[#6C63A8]";
+
   return (
-    <div className="mt-4 rounded-[24px] border border-slate-200 bg-white px-5 py-5 shadow-[0_16px_36px_-30px_rgba(15,23,42,0.35)]">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Brand Evaluation</p>
-          <h3 className="mt-1 text-lg font-semibold text-slate-900">Score Summary</h3>
+    <div className="mt-4 overflow-hidden rounded-[24px] border border-[#E8EBF4] bg-[#FBFBFE] px-4 py-3 shadow-[0_18px_42px_-34px_rgba(60,47,143,0.22)]">
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Brand Evaluation</p>
+            <span className={`inline-flex items-center rounded-[14px] border px-2.5 py-1 text-xs font-semibold shadow-[0_10px_24px_-24px_rgba(60,47,143,0.35)] ${overallToneClass}`}>
+              Overall {overallScore}
+            </span>
+          </div>
         </div>
-        <div className="rounded-[18px] bg-[#EEF2FF] px-4 py-3 text-right">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Overall</p>
-          <p className="mt-1 text-3xl font-semibold text-slate-900">{Math.round(scoring.overall_score)}</p>
+        <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+          <ScorePill label="On-Brand" value={scoring.score_breakdown.on_brand} />
+          <ScorePill label="Prompt" value={scoring.score_breakdown.prompt_adherence} />
+          <ScorePill label="Relevance" value={scoring.score_breakdown.relevance} />
         </div>
-      </div>
-      <div className="mt-4 grid gap-3 sm:grid-cols-3">
-        <ScorePill label="On-Brand" value={scoring.score_breakdown.on_brand} />
-        <ScorePill label="Prompt Adherence" value={scoring.score_breakdown.prompt_adherence} />
-        <ScorePill label="Relevance" value={scoring.score_breakdown.relevance} />
       </div>
     </div>
   );
