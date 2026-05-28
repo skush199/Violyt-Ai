@@ -1676,6 +1676,29 @@ class ContextCompilerService:
                 normalized_sequence_summary = cls._normalize_text(item.get("structural_cues"), limit=120)
             if not normalized_sequence_summary and normalized_headline_hint and not cls._looks_like_weak_sequence_hint(normalized_headline_hint):
                 normalized_sequence_summary = normalized_headline_hint
+            sample_page_headline = cls._normalize_text(item.get("sample_page_headline"), limit=120)
+            sample_page_supporting = cls._normalize_text(item.get("sample_page_supporting"), limit=160)
+            sample_page_copy = cls._normalize_text(item.get("sample_page_copy"), limit=500)
+            sample_page_editorial_role = cls._normalize_text(item.get("sample_page_editorial_role"), limit=40)
+            sample_page_copy_behavior = cls._normalize_text(item.get("sample_page_copy_behavior"), limit=48)
+            sample_page_copy_density = cls._normalize_text(item.get("sample_page_copy_density"), limit=24)
+            sample_page_closing_grammar = cls._normalize_text(item.get("sample_page_closing_grammar"), limit=40)
+            sample_page_text_blocks = []
+            for block in (item.get("sample_page_text_blocks") or [])[:8]:
+                if not isinstance(block, dict):
+                    continue
+                text = cls._normalize_text(block.get("text"), limit=160)
+                if not text:
+                    continue
+                sample_page_text_blocks.append(
+                    {
+                        "text": text,
+                        "x": block.get("x"),
+                        "y": block.get("y"),
+                        "w": block.get("w"),
+                        "h": block.get("h"),
+                    }
+                )
             slides.append(
                 {
                     "slide_index": item.get("slide_index"),
@@ -1690,6 +1713,17 @@ class ContextCompilerService:
                     "visual_craft": cls._compact_visual_craft_dna(visual_craft),
                     "subject_semantics": cls._compact_subject_semantics_dna(subject_semantics),
                     "editorial_dna": cls._compact_editorial_dna(editorial_dna),
+                    "sample_page_headline": sample_page_headline,
+                    "sample_page_supporting": sample_page_supporting,
+                    "sample_page_copy": sample_page_copy,
+                    "sample_page_text_blocks": sample_page_text_blocks,
+                    "sample_page_editorial_source": cls._normalize_text(item.get("sample_page_editorial_source"), limit=32),
+                    "sample_page_editorial_role": sample_page_editorial_role,
+                    "sample_page_copy_behavior": sample_page_copy_behavior,
+                    "sample_page_copy_density": sample_page_copy_density,
+                    "sample_page_closing_grammar": sample_page_closing_grammar,
+                    "sample_page_has_question_hook": bool(item.get("sample_page_has_question_hook")),
+                    "sample_page_has_source_labels": bool(item.get("sample_page_has_source_labels")),
                 }
             )
         return {
@@ -2786,6 +2820,66 @@ class ContextCompilerService:
             visual_identity.get("logo_position") or design_system.get("logo_anchor"),
             limit=40,
         )
+        visual_style_policy = (
+            design_system.get("visual_style_policy", {})
+            if isinstance(design_system.get("visual_style_policy"), dict)
+            else {}
+        )
+        format_visual_style_profiles = (
+            design_system.get("format_visual_style_profiles", {})
+            if isinstance(design_system.get("format_visual_style_profiles"), dict)
+            else {}
+        )
+        active_visual_style_policy = (
+            format_visual_style_profiles.get(format_family, {})
+            if isinstance(format_visual_style_profiles.get(format_family), dict)
+            else {}
+        ) or visual_style_policy
+        visual_style_summary = cls._join_summary(
+            cls._summary_list(
+                [
+                    active_visual_style_policy.get("dominant_image_mode") or visual_style_policy.get("dominant_image_mode"),
+                    active_visual_style_policy.get("dominant_depth_mode") or visual_style_policy.get("dominant_depth_mode"),
+                    active_visual_style_policy.get("dominant_rendering_mode") or visual_style_policy.get("dominant_rendering_mode"),
+                    active_visual_style_policy.get("dominant_subject_mode") or visual_style_policy.get("dominant_subject_mode"),
+                    active_visual_style_policy.get("dominant_support_mode") or visual_style_policy.get("dominant_support_mode"),
+                    active_visual_style_policy.get("dominant_story_visual_role") or visual_style_policy.get("dominant_story_visual_role"),
+                    active_visual_style_policy.get("style_consistency") or visual_style_policy.get("style_consistency"),
+                    active_visual_style_policy.get("three_d_usage") or visual_style_policy.get("three_d_usage"),
+                    active_visual_style_policy.get("reference_pattern_priority") or visual_style_policy.get("reference_pattern_priority"),
+                ],
+                limit=9,
+                item_limit=28,
+            ),
+            limit=220,
+        )
+        reference_visual_profiles = []
+        for reference in (visual_identity.get("reference_creatives", []) or [])[:6]:
+            if not isinstance(reference, dict):
+                continue
+            profile = (
+                reference.get("visual_style_profile")
+                if isinstance(reference.get("visual_style_profile"), dict)
+                else (
+                    (reference.get("style_characteristics") or {}).get("visual_style_profile")
+                    if isinstance(reference.get("style_characteristics"), dict)
+                    else {}
+                )
+            )
+            if not isinstance(profile, dict) or not profile:
+                continue
+            reference_visual_profiles.append(
+                {
+                    "asset_id": cls._normalize_text(reference.get("asset_id"), limit=64),
+                    "image_mode": cls._normalize_text(profile.get("image_mode"), limit=24),
+                    "depth_mode": cls._normalize_text(profile.get("depth_mode"), limit=24),
+                    "rendering_mode": cls._normalize_text(profile.get("rendering_mode"), limit=24),
+                    "subject_mode": cls._normalize_text(profile.get("subject_mode"), limit=24),
+                    "support_mode": cls._normalize_text(profile.get("support_mode"), limit=24),
+                    "story_visual_role": cls._normalize_text(profile.get("story_visual_role"), limit=24),
+                    "consistency_hint": cls._normalize_text(profile.get("consistency_hint"), limit=24),
+                }
+            )
         return {
             "mode": cls._normalize_text(layout_decision.get("mode"), limit=24),
             "template_name": template_name,
@@ -2822,6 +2916,7 @@ class ContextCompilerService:
             "brand_cue_summary": brand_cue_summary,
             "editorial_story_arc_summary": editorial_story_arc_summary,
             "editorial_style_summary": editorial_style_summary,
+            "visual_style_summary": visual_style_summary,
             "logo_position": logo_position,
             "template_layout_dna": cls._compact_layout_dna(template_layout_dna),
             "template_composition_logic": cls._compact_composition_logic_dna(template_composition_logic),
@@ -2829,6 +2924,81 @@ class ContextCompilerService:
             "template_subject_semantics": cls._compact_subject_semantics_dna(template_subject_semantics),
             "template_editorial_dna": cls._compact_editorial_dna(template_editorial_dna),
             "template_sequence_pack": cls._compact_sequence_pack(sequence_pack),
+            "visual_style_policy": {
+                "sample_count": int(active_visual_style_policy.get("sample_count") or visual_style_policy.get("sample_count") or 0),
+                "dominant_image_mode": cls._normalize_text(
+                    active_visual_style_policy.get("dominant_image_mode") or visual_style_policy.get("dominant_image_mode"),
+                    limit=24,
+                ),
+                "dominant_depth_mode": cls._normalize_text(
+                    active_visual_style_policy.get("dominant_depth_mode") or visual_style_policy.get("dominant_depth_mode"),
+                    limit=24,
+                ),
+                "dominant_rendering_mode": cls._normalize_text(
+                    active_visual_style_policy.get("dominant_rendering_mode") or visual_style_policy.get("dominant_rendering_mode"),
+                    limit=24,
+                ),
+                "dominant_subject_mode": cls._normalize_text(
+                    active_visual_style_policy.get("dominant_subject_mode") or visual_style_policy.get("dominant_subject_mode"),
+                    limit=24,
+                ),
+                "dominant_support_mode": cls._normalize_text(
+                    active_visual_style_policy.get("dominant_support_mode") or visual_style_policy.get("dominant_support_mode"),
+                    limit=24,
+                ),
+                "dominant_story_visual_role": cls._normalize_text(
+                    active_visual_style_policy.get("dominant_story_visual_role") or visual_style_policy.get("dominant_story_visual_role"),
+                    limit=24,
+                ),
+                "style_consistency": cls._normalize_text(
+                    active_visual_style_policy.get("style_consistency") or visual_style_policy.get("style_consistency"),
+                    limit=24,
+                ),
+                "three_d_usage": cls._normalize_text(
+                    active_visual_style_policy.get("three_d_usage") or visual_style_policy.get("three_d_usage"),
+                    limit=24,
+                ),
+                "reference_pattern_priority": cls._normalize_text(
+                    active_visual_style_policy.get("reference_pattern_priority") or visual_style_policy.get("reference_pattern_priority"),
+                    limit=32,
+                ),
+                "image_modes": cls._summary_list(
+                    active_visual_style_policy.get("image_modes") or visual_style_policy.get("image_modes"),
+                    limit=4,
+                    item_limit=24,
+                ),
+                "depth_modes": cls._summary_list(
+                    active_visual_style_policy.get("depth_modes") or visual_style_policy.get("depth_modes"),
+                    limit=4,
+                    item_limit=24,
+                ),
+                "rendering_modes": cls._summary_list(
+                    active_visual_style_policy.get("rendering_modes") or visual_style_policy.get("rendering_modes"),
+                    limit=4,
+                    item_limit=24,
+                ),
+                "subject_modes": cls._summary_list(
+                    active_visual_style_policy.get("subject_modes") or visual_style_policy.get("subject_modes"),
+                    limit=5,
+                    item_limit=24,
+                ),
+                "support_modes": cls._summary_list(
+                    active_visual_style_policy.get("support_modes") or visual_style_policy.get("support_modes"),
+                    limit=5,
+                    item_limit=24,
+                ),
+                "story_visual_roles": cls._summary_list(
+                    active_visual_style_policy.get("story_visual_roles") or visual_style_policy.get("story_visual_roles"),
+                    limit=5,
+                    item_limit=24,
+                ),
+            },
+            "format_visual_style_profiles": {
+                key: value
+                for key, value in format_visual_style_profiles.items()
+                if isinstance(value, dict)
+            },
+            "reference_visual_profiles": reference_visual_profiles,
             "visual_craft": {
                 "depth_styles": cls._summary_list(visual_craft.get("depth_styles"), limit=6, item_limit=28),
                 "rendering_styles": cls._summary_list(visual_craft.get("rendering_styles"), limit=6, item_limit=28),
@@ -2909,7 +3079,31 @@ class ContextCompilerService:
                 "brand_cue_summary": brand_cue_summary,
                 "editorial_story_arc_summary": editorial_story_arc_summary,
                 "editorial_style_summary": editorial_style_summary,
+                "visual_style_summary": visual_style_summary,
                 "logo_position": logo_position,
+                "visual_style_policy": {
+                    "sample_count": int(visual_style_policy.get("sample_count") or 0),
+                    "dominant_image_mode": cls._normalize_text(visual_style_policy.get("dominant_image_mode"), limit=24),
+                    "dominant_depth_mode": cls._normalize_text(visual_style_policy.get("dominant_depth_mode"), limit=24),
+                    "dominant_rendering_mode": cls._normalize_text(visual_style_policy.get("dominant_rendering_mode"), limit=24),
+                    "dominant_subject_mode": cls._normalize_text(visual_style_policy.get("dominant_subject_mode"), limit=24),
+                    "dominant_support_mode": cls._normalize_text(visual_style_policy.get("dominant_support_mode"), limit=24),
+                    "dominant_story_visual_role": cls._normalize_text(visual_style_policy.get("dominant_story_visual_role"), limit=24),
+                    "style_consistency": cls._normalize_text(visual_style_policy.get("style_consistency"), limit=24),
+                    "three_d_usage": cls._normalize_text(visual_style_policy.get("three_d_usage"), limit=24),
+                    "reference_pattern_priority": cls._normalize_text(visual_style_policy.get("reference_pattern_priority"), limit=32),
+                    "image_modes": cls._summary_list(visual_style_policy.get("image_modes"), limit=4, item_limit=24),
+                    "depth_modes": cls._summary_list(visual_style_policy.get("depth_modes"), limit=4, item_limit=24),
+                    "rendering_modes": cls._summary_list(visual_style_policy.get("rendering_modes"), limit=4, item_limit=24),
+                    "subject_modes": cls._summary_list(visual_style_policy.get("subject_modes"), limit=5, item_limit=24),
+                    "support_modes": cls._summary_list(visual_style_policy.get("support_modes"), limit=5, item_limit=24),
+                    "story_visual_roles": cls._summary_list(visual_style_policy.get("story_visual_roles"), limit=5, item_limit=24),
+                },
+                "format_visual_style_profiles": {
+                    key: value
+                    for key, value in format_visual_style_profiles.items()
+                    if isinstance(value, dict)
+                },
                 "visual_craft": {
                     "depth_styles": cls._summary_list(visual_craft.get("depth_styles"), limit=6, item_limit=28),
                     "rendering_styles": cls._summary_list(visual_craft.get("rendering_styles"), limit=6, item_limit=28),
@@ -3573,8 +3767,13 @@ class ContextCompilerService:
                 {
                     "template_id": self._normalize_text(item.get("template_id"), limit=72),
                     "name": self._normalize_text(item.get("name"), limit=72),
+                    "display_name": self._normalize_text(item.get("display_name"), limit=72),
                     "score": item.get("score"),
                     "match_type": self._normalize_text(item.get("match_type"), limit=32),
+                    "format_family": self._normalize_text(item.get("format_family"), limit=24),
+                    "is_primary_adaptation": bool(item.get("is_primary_adaptation")),
+                    "selection_reason": self._normalize_text(item.get("selection_reason"), limit=40),
+                    "recommendation_group_key": self._normalize_text(item.get("recommendation_group_key"), limit=64),
                     "editability_score": item.get("editability_score"),
                     "reinterpretation_suitability": item.get("reinterpretation_suitability"),
                     "style_only_suitability": item.get("style_only_suitability"),

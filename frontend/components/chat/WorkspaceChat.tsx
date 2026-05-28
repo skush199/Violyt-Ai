@@ -52,6 +52,8 @@ import {
   getGenerationDecisionTemplate,
   getGenerationDecisionTemplatePreview,
   getRecommendationConfidence,
+  getRecommendationDisplayName,
+  getRecommendationSelectionReason,
 } from "@/lib/generation-decision";
 
 type WorkspaceChatProps = { brandKey: string };
@@ -367,6 +369,12 @@ function TemplateRecommendationRail({
           const previewUrl = brokenPreviewIds[recommendation.template_id]
             ? undefined
             : getTemplatePreviewUrl(recommendation);
+          const displayName = getRecommendationDisplayName(recommendation);
+          const selectionReason = getRecommendationSelectionReason(recommendation);
+          const formatFamilyLabel =
+            typeof recommendation.format_family === "string" && recommendation.format_family.trim()
+              ? recommendation.format_family.charAt(0).toUpperCase() + recommendation.format_family.slice(1)
+              : null;
           return (
             <div
               key={recommendation.template_id}
@@ -404,10 +412,26 @@ function TemplateRecommendationRail({
                 )}
               </button>
               <div className="min-w-0 flex-1 space-y-1">
-                <p className="line-clamp-2 text-[11px] font-semibold leading-4 text-slate-800">{recommendation.name}</p>
+                <p className="line-clamp-2 text-[11px] font-semibold leading-4 text-slate-800">{displayName}</p>
                 {/*
                   {formatRecommendationMatchType(recommendation.match_type)} · {getRecommendationConfidence(recommendation)}
                 */}
+                <div className="flex flex-wrap items-center gap-1">
+                  <span
+                    className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${
+                      recommendation.is_primary_adaptation
+                        ? "bg-primary/10 text-primary"
+                        : "bg-slate-100 text-slate-600"
+                    }`}
+                  >
+                    {selectionReason}
+                  </span>
+                  {formatFamilyLabel ? (
+                    <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-semibold text-slate-600">
+                      {formatFamilyLabel}
+                    </span>
+                  ) : null}
+                </div>
                 <p className="text-[10px] font-medium text-slate-500">{getRecommendationConfidence(recommendation)}</p>
               </div>
               <div className="flex shrink-0 items-center gap-2">

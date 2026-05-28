@@ -40,10 +40,15 @@ class TemplateRecommendRequest(APIModel):
 class TemplateRecommendationResponse(APIModel):
     template_id: UUID
     name: str
+    display_name: str | None = None
     asset_url: str | None = None
     score: float
     match_type: str = "adapted_template"
     decision_confidence: float | None = None
+    format_family: str | None = None
+    is_primary_adaptation: bool = False
+    selection_reason: str | None = None
+    recommendation_group_key: str | None = None
     reasons: list[str] = Field(default_factory=list)
     score_breakdown: dict = Field(default_factory=dict)
     adaptation_plan: dict = Field(default_factory=dict)

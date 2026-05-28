@@ -366,10 +366,15 @@ export interface TemplateResponse {
 export interface TemplateRecommendationResponse {
   template_id: UUID;
   name: string;
+  display_name?: string | null;
   asset_url?: string | null;
   score: number;
   match_type: string;
   decision_confidence?: number | null;
+  format_family?: string | null;
+  is_primary_adaptation?: boolean;
+  selection_reason?: string | null;
+  recommendation_group_key?: string | null;
   reasons: string[];
   score_breakdown: Record<string, unknown>;
   adaptation_plan: Record<string, unknown>;

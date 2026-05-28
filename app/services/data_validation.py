@@ -610,6 +610,7 @@ class DataValidatorService:
                     "composition_logic": style_characteristics.get("composition_logic", {}),
                     "visual_craft_dna": style_characteristics.get("visual_craft_dna", {}),
                     "subject_semantics": style_characteristics.get("subject_semantics", {}),
+                    "visual_style_profile": style_characteristics.get("visual_style_profile", {}),
                     "brand_cues": style_characteristics.get("brand_cues", {}),
                     "design_tokens": style_characteristics.get("design_tokens", {}),
                     "editorial_dna": style_characteristics.get("editorial_dna", {}),
@@ -640,6 +641,7 @@ class DataValidatorService:
                     "composition_logic": analysis.get("composition_logic", {}),
                     "visual_craft_dna": analysis.get("visual_craft_dna", {}),
                     "subject_semantics": analysis.get("subject_semantics", {}),
+                    "visual_style_profile": analysis.get("visual_style_profile", {}),
                     "brand_cues": analysis.get("brand_cues", {}),
                     "design_tokens": analysis.get("design_tokens", {}),
                     "editorial_dna": analysis.get("editorial_dna", {}),
@@ -662,6 +664,356 @@ class DataValidatorService:
             first_seen.setdefault(item.casefold(), item)
         ordered = sorted(counts.items(), key=lambda item: (-item[1], first_seen[item[0]]))
         return [first_seen[key] for key, _ in ordered[:limit]]
+
+    @staticmethod
+    def _supports_visual_signal(value: object) -> bool:
+        normalized = str(value or "").strip().lower()
+        return normalized not in {"", "none", "no", "false", "0", "null", "unknown"}
+
+    @staticmethod
+    def _top_ratio(values: list[str], target: str) -> float:
+        if not values:
+            return 0.0
+        normalized = [str(item or "").strip().lower() for item in values if str(item or "").strip()]
+        if not normalized:
+            return 0.0
+        matches = sum(1 for item in normalized if item == target)
+        return round(matches / len(normalized), 4)
+
+    @staticmethod
+    def _rendering_family(rendering_mode: str) -> str:
+        normalized = str(rendering_mode or "").strip().lower()
+        return {
+            "photo": "photo",
+            "vector": "illustration",
+            "3d_render": "3d",
+        }.get(normalized, "mixed" if normalized in {"mixed", "composite"} else "")
+
+    @classmethod
+    def _profile_visual_family(cls, profile: dict[str, object]) -> str:
+        image_mode = str(profile.get("image_mode") or "").strip().lower()
+        rendering_mode = str(profile.get("rendering_mode") or "").strip().lower()
+        depth_mode = str(profile.get("depth_mode") or "").strip().lower()
+        subject_mode = str(profile.get("subject_mode") or "").strip().lower()
+        support_mode = str(profile.get("support_mode") or "").strip().lower()
+        if image_mode in {"photo", "illustration", "3d"}:
+            return image_mode
+        rendering_family = cls._rendering_family(rendering_mode)
+        if rendering_family in {"photo", "illustration", "3d"}:
+            return rendering_family
+        if depth_mode in {"true_3d", "3d_illusion"}:
+            return "3d"
+        if support_mode == "photo_led" or subject_mode in {"food", "human"}:
+            return "photo"
+        if support_mode in {"chart_led", "icon_led"}:
+            return "illustration"
+        return "mixed"
+
+    @classmethod
+    def _resolve_dominant_policy_value(
+        cls,
+        values: list[str],
+        ordered_values: list[str],
+        *,
+        style_consistency: str,
+        mixed_label: str = "mixed",
+        min_ratio: float = 0.5,
+    ) -> str | None:
+        if not ordered_values:
+            return None
+        top_value = ordered_values[0]
+        if style_consistency != "mixed":
+            return top_value
+        top_ratio = cls._top_ratio(values, top_value)
+        return top_value if top_ratio >= min_ratio else mixed_label
+
+    @classmethod
+    def _visual_style_profile_from_record(cls, record: dict[str, object]) -> dict[str, object]:
+        if not isinstance(record, dict):
+            return {}
+        existing = record.get("visual_style_profile") if isinstance(record.get("visual_style_profile"), dict) else {}
+        image_treatment = record.get("image_treatment") if isinstance(record.get("image_treatment"), dict) else {}
+        visual_craft = record.get("visual_craft_dna") if isinstance(record.get("visual_craft_dna"), dict) else {}
+        subject_semantics = record.get("subject_semantics") if isinstance(record.get("subject_semantics"), dict) else {}
+        infographic_elements = record.get("infographic_elements") if isinstance(record.get("infographic_elements"), dict) else {}
+        editorial_dna = record.get("editorial_dna") if isinstance(record.get("editorial_dna"), dict) else {}
+
+        design_style = str(record.get("design_style") or "").strip().lower()
+        treatment_style = str(image_treatment.get("style") or "").strip().lower()
+        rendering_style = str(visual_craft.get("rendering_style") or "").strip().lower()
+        depth_style = str(visual_craft.get("depth_style") or "").strip().lower()
+        scene_type = str(subject_semantics.get("scene_type") or "").strip().lower()
+        abstraction_level = str(subject_semantics.get("abstraction_level") or "").strip().lower()
+        human_presence = str(subject_semantics.get("human_presence") or "").strip().lower()
+        primary_subjects = [
+            str(item or "").strip().lower()
+            for item in (subject_semantics.get("primary_subjects") or [])
+            if str(item or "").strip()
+        ]
+        storytelling_mode = str(editorial_dna.get("storytelling_mode") or "").strip().lower()
+        explanation_style = str(editorial_dna.get("explanation_style") or "").strip().lower()
+        closing_style = str(editorial_dna.get("closing_style") or "").strip().lower()
+        story_roles = [
+            str(item or "").strip().lower()
+            for item in (editorial_dna.get("story_arc_roles") or [])
+            if str(item or "").strip()
+        ]
+        signal_text = " ".join(
+            [
+                design_style,
+                treatment_style,
+                rendering_style,
+                depth_style,
+                scene_type,
+                abstraction_level,
+                " ".join(primary_subjects),
+            ]
+        )
+
+        image_mode = str(existing.get("image_mode") or "").strip().lower()
+        if not image_mode:
+            if "3d" in signal_text:
+                image_mode = "3d"
+            elif any(token in signal_text for token in ("photo", "photograph", "editorial", "lifestyle", "portrait", "food")):
+                image_mode = "photo"
+            elif any(token in signal_text for token in ("illustration", "vector", "iconic", "abstract", "diagram")):
+                image_mode = "illustration"
+            elif any(token in signal_text for token in ("mixed", "composite", "collage")):
+                image_mode = "mixed"
+            else:
+                image_mode = "mixed" if rendering_style == "mixed" else "illustration"
+
+        depth_mode = str(existing.get("depth_mode") or "").strip().lower()
+        if not depth_mode:
+            if depth_style == "true_3d":
+                depth_mode = "true_3d"
+            elif depth_style in {"layered", "3d_illusion"}:
+                depth_mode = depth_style
+            elif depth_style == "flat":
+                depth_mode = "flat"
+            elif "isometric" in signal_text or "2.5d" in signal_text:
+                depth_mode = "3d_illusion"
+            else:
+                depth_mode = "flat"
+
+        rendering_mode = str(existing.get("rendering_mode") or "").strip().lower()
+        if not rendering_mode:
+            if rendering_style == "3d_render":
+                rendering_mode = "3d_render"
+            elif rendering_style in {"photo", "vector", "composite", "mixed"}:
+                rendering_mode = rendering_style
+            elif image_mode == "photo":
+                rendering_mode = "photo"
+            elif image_mode == "3d":
+                rendering_mode = "3d_render"
+            elif any(token in signal_text for token in ("collage", "overlay", "composite")):
+                rendering_mode = "composite"
+            else:
+                rendering_mode = "vector"
+
+        subject_mode = str(existing.get("subject_mode") or "").strip().lower()
+        if not subject_mode:
+            subject_text = " ".join(primary_subjects + [scene_type])
+            if any(token in subject_text for token in ("food", "fish", "prawn", "seafood", "dish", "recipe", "meal")):
+                subject_mode = "food"
+            elif human_presence not in {"", "none"} or any(
+                token in subject_text
+                for token in ("human", "people", "person", "child", "parent", "coach", "team", "family", "patient")
+            ):
+                subject_mode = "human"
+            elif any(token in subject_text for token in ("dashboard", "app", "screen", "laptop", "mockup", "product")):
+                subject_mode = "product_mockup"
+            elif any(token in subject_text for token in ("metaphor", "concept", "bias", "mindset", "journey")) or abstraction_level == "conceptual":
+                subject_mode = "conceptual"
+            elif cls._supports_visual_signal(infographic_elements.get("graphs")) or cls._supports_visual_signal(infographic_elements.get("icons")):
+                subject_mode = "infographic"
+            elif primary_subjects:
+                subject_mode = "object"
+            else:
+                subject_mode = "mixed"
+
+        support_mode = str(existing.get("support_mode") or "").strip().lower()
+        if not support_mode:
+            has_graphs = any(
+                cls._supports_visual_signal(infographic_elements.get(key))
+                for key in ("graphs", "charts", "data_visuals", "tables")
+            )
+            has_icons = any(
+                cls._supports_visual_signal(infographic_elements.get(key))
+                for key in ("icons", "badges", "markers", "pictograms")
+            )
+            if has_graphs and has_icons:
+                support_mode = "mixed"
+            elif has_graphs:
+                support_mode = "chart_led"
+            elif has_icons:
+                support_mode = "icon_led"
+            elif image_mode == "photo":
+                support_mode = "photo_led"
+            elif subject_mode in {"food", "object", "product_mockup"} or image_mode == "3d":
+                support_mode = "object_led"
+            elif not cls._supports_visual_signal(image_treatment.get("style")):
+                support_mode = "text_led"
+            else:
+                support_mode = "mixed"
+
+        story_visual_role = str(existing.get("story_visual_role") or "").strip().lower()
+        if not story_visual_role:
+            if closing_style == "cta_close" or any(role in {"cta", "cta_close", "close", "ending", "closing"} for role in story_roles):
+                story_visual_role = "cta_close"
+            elif any(role in {"hook", "cover", "intro", "opening", "context"} for role in story_roles):
+                story_visual_role = "hook_hero"
+            elif storytelling_mode == "comparison":
+                story_visual_role = "comparison"
+            elif storytelling_mode in {"steps", "benefit_stack"} or explanation_style == "stepwise_educational":
+                story_visual_role = "steps"
+            elif storytelling_mode == "data_story" or any(
+                cls._supports_visual_signal(infographic_elements.get(key))
+                for key in ("graphs", "charts", "data_visuals")
+            ):
+                story_visual_role = "data_story"
+            else:
+                story_visual_role = "detail_explainer"
+
+        style_mix = existing.get("style_mix") if isinstance(existing.get("style_mix"), list) else []
+        if not style_mix:
+            style_mix = [
+                value
+                for value in [image_mode, depth_mode, rendering_mode, subject_mode, support_mode, story_visual_role]
+                if value
+            ]
+        deduped_style_mix: list[str] = []
+        seen: set[str] = set()
+        for item in style_mix:
+            normalized = str(item or "").strip().lower()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped_style_mix.append(normalized)
+
+        consistency_hint = str(existing.get("consistency_hint") or "").strip().lower()
+        if not consistency_hint:
+            visual_families = {
+                family
+                for family in [
+                    image_mode if image_mode in {"photo", "illustration", "3d"} else "",
+                    cls._rendering_family(rendering_mode),
+                    "3d" if depth_mode in {"true_3d", "3d_illusion"} else "",
+                ]
+                if family
+            }
+            consistency_hint = "mixed_mode" if image_mode == "mixed" or rendering_mode == "mixed" or len(visual_families) >= 2 else "single_mode"
+
+        return {
+            "image_mode": image_mode,
+            "depth_mode": depth_mode,
+            "rendering_mode": rendering_mode,
+            "subject_mode": subject_mode,
+            "support_mode": support_mode,
+            "story_visual_role": story_visual_role,
+            "style_mix": deduped_style_mix[:8],
+            "consistency_hint": consistency_hint,
+        }
+
+    @classmethod
+    def _synthesize_visual_style_policy(cls, records: list[dict[str, object]]) -> dict[str, object]:
+        profiles = [cls._visual_style_profile_from_record(record) for record in records if isinstance(record, dict)]
+        profiles = [profile for profile in profiles if profile]
+        if not profiles:
+            return {}
+
+        image_modes = cls._most_common_values([str(profile.get("image_mode") or "") for profile in profiles], limit=4)
+        depth_modes = cls._most_common_values([str(profile.get("depth_mode") or "") for profile in profiles], limit=4)
+        rendering_modes = cls._most_common_values([str(profile.get("rendering_mode") or "") for profile in profiles], limit=4)
+        subject_modes = cls._most_common_values([str(profile.get("subject_mode") or "") for profile in profiles], limit=5)
+        support_modes = cls._most_common_values([str(profile.get("support_mode") or "") for profile in profiles], limit=5)
+        story_visual_roles = cls._most_common_values([str(profile.get("story_visual_role") or "") for profile in profiles], limit=5)
+        style_mix = cls._most_common_values(
+            [
+                str(item)
+                for profile in profiles
+                for item in (profile.get("style_mix") or [])
+            ],
+            limit=8,
+        )
+        consistency_hints = cls._most_common_values([str(profile.get("consistency_hint") or "") for profile in profiles], limit=2)
+        image_mode_values = [str(profile.get("image_mode") or "") for profile in profiles if str(profile.get("image_mode") or "").strip()]
+        depth_mode_values = [str(profile.get("depth_mode") or "") for profile in profiles if str(profile.get("depth_mode") or "").strip()]
+        rendering_mode_values = [str(profile.get("rendering_mode") or "") for profile in profiles if str(profile.get("rendering_mode") or "").strip()]
+        support_mode_values = [str(profile.get("support_mode") or "") for profile in profiles if str(profile.get("support_mode") or "").strip()]
+        story_role_values = [str(profile.get("story_visual_role") or "") for profile in profiles if str(profile.get("story_visual_role") or "").strip()]
+        visual_families = [cls._profile_visual_family(profile) for profile in profiles if cls._profile_visual_family(profile)]
+        family_modes = cls._most_common_values(visual_families, limit=4)
+        family_dominance = cls._top_ratio(visual_families, family_modes[0]) if family_modes else 0.0
+        three_d_count = sum(
+            1
+            for profile in profiles
+            if str(profile.get("image_mode") or "") == "3d"
+            or str(profile.get("depth_mode") or "") in {"true_3d", "3d_illusion"}
+            or str(profile.get("rendering_mode") or "") == "3d_render"
+        )
+        if three_d_count == 0:
+            three_d_usage = "none"
+        else:
+            ratio = round(three_d_count / max(len(profiles), 1), 4)
+            if ratio >= 0.66:
+                three_d_usage = "often"
+            elif ratio >= 0.33:
+                three_d_usage = "sometimes"
+            else:
+                three_d_usage = "rare"
+        style_consistency = "strong" if family_dominance >= 0.7 else ("moderate" if family_dominance >= 0.5 else "mixed")
+        dominant_image_mode = cls._resolve_dominant_policy_value(
+            image_mode_values,
+            image_modes,
+            style_consistency=style_consistency,
+        )
+        dominant_depth_mode = cls._resolve_dominant_policy_value(
+            depth_mode_values,
+            depth_modes,
+            style_consistency=style_consistency,
+        )
+        dominant_rendering_mode = cls._resolve_dominant_policy_value(
+            rendering_mode_values,
+            rendering_modes,
+            style_consistency=style_consistency,
+        )
+        dominant_subject_mode = cls._resolve_dominant_policy_value(
+            [str(profile.get("subject_mode") or "") for profile in profiles if str(profile.get("subject_mode") or "").strip()],
+            subject_modes,
+            style_consistency=style_consistency,
+        )
+        dominant_support_mode = cls._resolve_dominant_policy_value(
+            support_mode_values,
+            support_modes,
+            style_consistency=style_consistency,
+        )
+        dominant_story_visual_role = cls._resolve_dominant_policy_value(
+            story_role_values,
+            story_visual_roles,
+            style_consistency=style_consistency,
+        )
+        return {
+            "sample_count": len(profiles),
+            "dominant_image_mode": dominant_image_mode,
+            "dominant_depth_mode": dominant_depth_mode,
+            "dominant_rendering_mode": dominant_rendering_mode,
+            "dominant_subject_mode": dominant_subject_mode,
+            "dominant_support_mode": dominant_support_mode,
+            "dominant_story_visual_role": dominant_story_visual_role,
+            "image_modes": image_modes,
+            "depth_modes": depth_modes,
+            "rendering_modes": rendering_modes,
+            "subject_modes": subject_modes,
+            "support_modes": support_modes,
+            "story_visual_roles": story_visual_roles,
+            "visual_families": family_modes,
+            "style_mix": style_mix,
+            "style_consistency": style_consistency,
+            "consistency_hints": consistency_hints,
+            "three_d_usage": three_d_usage,
+            "reference_pattern_priority": "reference_specific" if style_consistency == "mixed" else "brand_dominant",
+        }
 
     @classmethod
     def _synthesize_component_motifs(cls, records: list[dict[str, object]]) -> dict[str, dict[str, object]]:
@@ -1096,7 +1448,9 @@ class DataValidatorService:
             limit=6,
         )
         editorial_patterns = cls._synthesize_editorial_patterns(records)
+        visual_style_policy = cls._synthesize_visual_style_policy(records)
         format_specific_patterns: dict[str, dict[str, object]] = {}
+        format_visual_style_profiles: dict[str, dict[str, object]] = {}
         for family in ("static", "carousel", "infographic"):
             family_records = [
                 item
@@ -1105,6 +1459,7 @@ class DataValidatorService:
             ]
             if family_records:
                 format_specific_patterns[family] = cls._synthesize_editorial_patterns(family_records)
+                format_visual_style_profiles[family] = cls._synthesize_visual_style_policy(family_records)
 
         brand_scores = [
             self_score
@@ -1167,6 +1522,8 @@ class DataValidatorService:
                 "environments": environments,
                 "abstraction_levels": abstraction_levels,
             },
+            "visual_style_policy": visual_style_policy,
+            "format_visual_style_profiles": format_visual_style_profiles,
             "brand_cues": {
                 "tone_keywords": tone_keywords,
                 "trust_markers": trust_markers,
@@ -1229,24 +1586,57 @@ class DataValidatorService:
         reference_payload = []
         template_payload = []
         for reference in references:
+            style_characteristics = (
+                dict(reference.style_characteristics)
+                if isinstance(reference.style_characteristics, dict)
+                else {}
+            )
+            reference_profile = self._visual_style_profile_from_record(
+                {
+                    "design_style": style_characteristics.get("design_style"),
+                    "image_treatment": style_characteristics.get("image_treatment", {}),
+                    "visual_craft_dna": style_characteristics.get("visual_craft_dna", {}),
+                    "subject_semantics": style_characteristics.get("subject_semantics", {}),
+                    "infographic_elements": style_characteristics.get("infographic_elements", {}),
+                    "editorial_dna": style_characteristics.get("editorial_dna", {}),
+                    "visual_style_profile": style_characteristics.get("visual_style_profile", {}),
+                }
+            )
+            if reference_profile and not isinstance(style_characteristics.get("visual_style_profile"), dict):
+                style_characteristics["visual_style_profile"] = reference_profile
             reference_payload.append(
                 {
                     "asset_id": str(reference.knowledge_asset_id),
                     "layout_structure": reference.layout_structure,
-                    "style_characteristics": reference.style_characteristics,
+                    "style_characteristics": style_characteristics,
+                    "visual_style_profile": reference_profile,
                     "reusable_zones": reference.reusable_zones,
                     "brand_score": reference.brand_score,
                     "template_id": str(reference.template_id) if reference.template_id else None,
                 }
             )
         for template in templates:
-            analysis = template.analysis_json or {}
+            analysis = dict(template.analysis_json or {})
+            template_profile = self._visual_style_profile_from_record(
+                {
+                    "design_style": analysis.get("design_style"),
+                    "image_treatment": analysis.get("image_treatment", {}),
+                    "visual_craft_dna": analysis.get("visual_craft_dna", {}),
+                    "subject_semantics": analysis.get("subject_semantics", {}),
+                    "infographic_elements": analysis.get("infographic_elements", {}),
+                    "editorial_dna": analysis.get("editorial_dna", {}),
+                    "visual_style_profile": analysis.get("visual_style_profile", {}),
+                }
+            )
+            if template_profile and not isinstance(analysis.get("visual_style_profile"), dict):
+                analysis["visual_style_profile"] = template_profile
             template_payload.append(
                 {
                     "template_id": str(template.id),
                     "source_asset_id": str(template.source_knowledge_asset_id) if template.source_knowledge_asset_id else None,
                     "origin_field_key": template.origin_field_key,
                     "analysis": analysis,
+                    "visual_style_profile": template_profile,
                     "matcher_features": template.matcher_features_json or {},
                 }
             )

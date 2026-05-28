@@ -28,7 +28,9 @@ def test_context_compiler_preserves_legacy_brand_foundation_field() -> None:
     assert compiled["brand_copy_brief"]["brand_foundations"] == "Build trust through clarity, confidence, and measured optimism."
 
 
-def test_context_compiler_visual_brief_includes_design_system_summaries() -> None:
+def test_context_compiler_visual_brief_includes_design_system_summaries(monkeypatch) -> None:
+    monkeypatch.setenv("DEBUG", "false")
+    get_settings.cache_clear()
     compiler = ContextCompilerService()
 
     compiled = compiler.compile(
@@ -110,6 +112,107 @@ def test_context_compiler_visual_brief_includes_design_system_summaries() -> Non
     assert "diagram led" in brief["image_treatment_summary"]
     assert brief["logo_position"] == "top-right"
     assert brief["gradient_preferences"][0]["direction"] == "diagonal"
+
+
+def test_context_compiler_visual_brief_exposes_visual_style_policy(monkeypatch) -> None:
+    monkeypatch.setenv("DEBUG", "false")
+    get_settings.cache_clear()
+    compiler = ContextCompilerService()
+
+    compiled = compiler.compile(
+        prompt="Create a carousel about retirement planning.",
+        brand_context={
+            "brand_name": "Dynamic Brand",
+            "voice_tone": {},
+            "guardrails": {},
+            "foundations": {},
+            "audience_insights": {},
+            "visual_identity": {
+                "reference_creatives": [
+                    {
+                        "asset_id": "ref-1",
+                        "visual_style_profile": {
+                            "image_mode": "3d",
+                            "depth_mode": "true_3d",
+                            "rendering_mode": "3d_render",
+                            "subject_mode": "object",
+                            "support_mode": "object_led",
+                            "story_visual_role": "hook_hero",
+                            "consistency_hint": "single_mode",
+                        },
+                    }
+                ],
+                "design_system": {
+                    "sample_count": 5,
+                    "layout_preferences": {
+                        "dominant": "editorial explainer",
+                        "preferred_zone_roles": ["headline", "image", "cta"],
+                    },
+                    "visual_style_policy": {
+                        "sample_count": 5,
+                        "dominant_image_mode": "mixed",
+                        "dominant_depth_mode": "layered",
+                        "dominant_rendering_mode": "composite",
+                        "dominant_subject_mode": "conceptual",
+                        "dominant_support_mode": "mixed",
+                        "dominant_story_visual_role": "detail_explainer",
+                        "style_consistency": "mixed",
+                        "three_d_usage": "sometimes",
+                        "reference_pattern_priority": "reference_specific",
+                        "image_modes": ["mixed", "3d", "photo"],
+                        "depth_modes": ["layered", "true_3d"],
+                        "rendering_modes": ["composite", "3d_render"],
+                        "subject_modes": ["conceptual", "object"],
+                        "support_modes": ["mixed", "object_led"],
+                        "story_visual_roles": ["detail_explainer", "hook_hero"],
+                    },
+                    "format_visual_style_profiles": {
+                        "carousel": {
+                            "sample_count": 4,
+                            "dominant_image_mode": "3d",
+                            "dominant_depth_mode": "true_3d",
+                            "dominant_rendering_mode": "3d_render",
+                            "dominant_subject_mode": "object",
+                            "dominant_support_mode": "object_led",
+                            "dominant_story_visual_role": "hook_hero",
+                            "style_consistency": "strong",
+                            "three_d_usage": "often",
+                            "reference_pattern_priority": "brand_dominant",
+                            "image_modes": ["3d", "mixed"],
+                            "depth_modes": ["true_3d"],
+                            "rendering_modes": ["3d_render"],
+                            "subject_modes": ["object"],
+                            "support_modes": ["object_led"],
+                            "story_visual_roles": ["hook_hero", "detail_explainer"],
+                        }
+                    },
+                },
+            },
+        },
+        persona_context={},
+        objective_context={},
+        ordered_knowledge={},
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png", "size": {"width": 1080, "height": 1350}},
+        conversation_context={},
+        session_memory={},
+        layout_decision={"mode": "adapted_template"},
+        template_context={
+            "sequence_pack": {
+                "family_name": "RETIREMENT-STORY",
+                "slides": [{"slide_index": 1, "story_role": "hook"}],
+            }
+        },
+        reference_assets=[],
+    )
+
+    brief = compiled["brand_visual_brief"]
+
+    assert brief["visual_style_policy"]["dominant_image_mode"] == "3d"
+    assert brief["visual_style_policy"]["three_d_usage"] == "often"
+    assert brief["visual_style_policy"]["reference_pattern_priority"] == "brand_dominant"
+    assert "3d" in brief["visual_style_summary"]
+    assert brief["reference_visual_profiles"][0]["asset_id"] == "ref-1"
+    assert brief["design_system"]["visual_style_policy"]["dominant_image_mode"] == "mixed"
 
 
 def test_context_compiler_preserves_sequence_pack_zone_maps_in_template_fit_brief() -> None:

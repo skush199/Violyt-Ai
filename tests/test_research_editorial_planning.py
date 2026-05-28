@@ -42,6 +42,66 @@ def test_research_editorial_planning_activates_for_research_heavy_carousel() -> 
     assert any("Treat verified_facts as the only claims" in item for item in brief["source_backing_rules"])
 
 
+def test_research_editorial_planning_uses_style_reference_sample_count_over_generic_preference() -> None:
+    service = ResearchEditorialPlanningService()
+
+    brief = service.build(
+        prompt="Create a LinkedIn carousel on the India-New Zealand FTA signed on 27 April 2026.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        knowledge_brief=[],
+        live_research={"status": "completed", "verified_facts": []},
+        content_format_guide={"format_expectations": {"carousel": {"preferred_slide_count": 5}}},
+        template_context={
+            "sequence_pack": {
+                "surface_policy": "style_reference_only",
+                "slide_count": 4,
+                "slides": [
+                    {"slide_index": 1, "story_role": "hook", "headline_hint": "Hook"},
+                    {"slide_index": 2, "story_role": "structure", "headline_hint": "Mechanics"},
+                    {"slide_index": 3, "story_role": "undercovered_angle", "headline_hint": "Missed angle"},
+                    {"slide_index": 4, "story_role": "takeaway", "headline_hint": "Takeaway"},
+                ],
+            }
+        },
+    )
+
+    assert brief["preferred_slide_count"] == 4
+    assert len(brief["outline"]) == 4
+    assert brief["narrative_contract"] == "follow_sample_editorial_rhythm"
+
+
+def test_research_editorial_planning_honors_explicit_prompt_count_over_sample_count() -> None:
+    service = ResearchEditorialPlanningService()
+
+    brief = service.build(
+        prompt="Create a 6 slide LinkedIn carousel on a new trade agreement.",
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        knowledge_brief=[],
+        live_research={},
+        content_format_guide={"format_expectations": {"carousel": {"preferred_slide_count": 5}}},
+        template_context={
+            "sequence_pack": {
+                "surface_policy": "style_reference_only",
+                "slide_count": 4,
+                "slides": [
+                    {"slide_index": 1, "story_role": "hook"},
+                    {"slide_index": 2, "story_role": "structure"},
+                    {"slide_index": 3, "story_role": "undercovered_angle"},
+                    {"slide_index": 4, "story_role": "takeaway"},
+                ],
+            }
+        },
+    )
+
+    assert brief["preferred_slide_count"] == 6
+
+
 def test_research_editorial_planning_separates_inference_and_uncertainty() -> None:
     service = ResearchEditorialPlanningService()
 
@@ -171,3 +231,20 @@ def test_research_editorial_planning_marks_hard_fail_when_fresh_research_is_requ
 
     assert brief["research_guard"]["strict_mode"] is True
     assert brief["research_guard"]["hard_fail"] is True
+
+
+def test_research_editorial_planning_allows_qualitative_inflation_prompt_when_research_unavailable() -> None:
+    brief = ResearchEditorialPlanningService().build(
+        prompt='Create a LinkedIn carousel on how inflation quietly erodes savings and real returns. Angle: a sharp reminder for people who think parking money in savings is "safe."',
+        studio_panel={"platform_preset": "linkedin", "format": "carousel", "file_type": "png"},
+        brand_context={"brand_name": "Jiraaf"},
+        persona_context={},
+        objective_context={},
+        knowledge_brief=[],
+        live_research={"status": "unavailable", "summary": "", "verified_facts": [], "ranked_sources": []},
+    )
+
+    assert brief["research_guard"]["strict_mode"] is True
+    assert brief["research_guard"]["requires_fresh_research"] is True
+    assert brief["research_guard"]["requires_blocking_research"] is False
+    assert brief["research_guard"]["hard_fail"] is False
