@@ -24,6 +24,8 @@ class BrandScoringService:
         "prompt_adherence": 0.35,
         "relevance": 0.25,
     }
+    IMAGE_RENDERED_EVIDENCE_WEIGHT = 0.85
+    IMAGE_PAYLOAD_EVIDENCE_WEIGHT = 0.15
     TOPIC_STOPWORDS = {
         "a",
         "an",
@@ -286,11 +288,12 @@ class BrandScoringService:
             brand_context=brand_context,
             reference_assets=reference_assets,
         )
+        rendered_output_text = self._visual_text_excerpt(visual_review)
         combined_output_text = " ".join(
             part
             for part in [
                 copy_text,
-                self._visual_text_excerpt(visual_review),
+                rendered_output_text,
             ]
             if str(part or "").strip()
         ).strip()
@@ -303,6 +306,8 @@ class BrandScoringService:
         prompt_adherence = self._prompt_adherence_score(
             prompt=prompt,
             combined_output_text=combined_output_text,
+            payload_output_text=copy_text,
+            rendered_output_text=rendered_output_text,
             studio_panel=studio_panel,
             visual_review=visual_review,
             output_assets=output_assets,
@@ -311,6 +316,10 @@ class BrandScoringService:
         relevance = self._relevance_score(
             prompt=prompt,
             combined_output_text=combined_output_text,
+            payload_output_text=copy_text,
+            rendered_output_text=rendered_output_text,
+            studio_panel=studio_panel,
+            output_assets=output_assets,
             tone_feedback=tone_feedback,
             persona_context=persona_context,
             objective_context=objective_context,
@@ -333,6 +342,8 @@ class BrandScoringService:
         developer_explanation = self._developer_explanation(
             prompt=prompt,
             combined_output_text=combined_output_text,
+            payload_output_text=copy_text,
+            rendered_output_text=rendered_output_text,
             studio_panel=studio_panel,
             tone_feedback=tone_feedback,
             visual_review=visual_review,
@@ -399,6 +410,8 @@ class BrandScoringService:
         *,
         prompt: str,
         combined_output_text: str,
+        payload_output_text: str,
+        rendered_output_text: str,
         studio_panel: dict[str, Any],
         tone_feedback: dict[str, Any],
         visual_review: dict[str, Any],
@@ -424,7 +437,16 @@ class BrandScoringService:
         visual_brand = (visual_brand_raw * 0.85) + (aesthetic_consistency * 0.15)
         usage_score = float(self._source_usage_score(explainability))
 
-        text_prompt = float(self._prompt_alignment_score(prompt, combined_output_text, []))
+        text_prompt = float(
+            self._effective_prompt_alignment_score(
+                prompt=prompt,
+                studio_panel=studio_panel,
+                output_assets=output_assets,
+                payload_output_text=payload_output_text,
+                rendered_output_text=rendered_output_text,
+                fallback_text=combined_output_text,
+            )
+        )
         visual_prompt = float(visual_review.get("prompt_alignment_score") or text_prompt or 70.0)
         format_score = float(
             self._format_fit_score(
@@ -450,9 +472,13 @@ class BrandScoringService:
         )
         context_score = (
             float(
-                self._context_alignment_score(
-                    context_reference,
-                    combined_output_text,
+                self._effective_context_alignment_score(
+                    context_reference=context_reference,
+                    studio_panel=studio_panel,
+                    output_assets=output_assets,
+                    payload_output_text=payload_output_text,
+                    rendered_output_text=rendered_output_text,
+                    fallback_text=combined_output_text,
                 )
             )
             if context_reference
@@ -468,7 +494,16 @@ class BrandScoringService:
                 ]
             )
         )
-        prompt_support = float(self._prompt_alignment_score(prompt, combined_output_text, []))
+        prompt_support = float(
+            self._effective_prompt_alignment_score(
+                prompt=prompt,
+                studio_panel=studio_panel,
+                output_assets=output_assets,
+                payload_output_text=payload_output_text,
+                rendered_output_text=rendered_output_text,
+                fallback_text=combined_output_text,
+            )
+        )
         visual_quality = float(
             mean(
                 [
@@ -479,14 +514,24 @@ class BrandScoringService:
         )
 
         matched_terms, missing_terms = self._prompt_vs_output_terms(prompt, visual_review)
-        semantic_matched_terms, semantic_missing_terms = self._prompt_term_diagnostics(
+        payload_semantic_matched_terms, payload_semantic_missing_terms = self._prompt_term_diagnostics(
             prompt,
-            combined_output_text,
+            payload_output_text,
+            [],
+        )
+        rendered_semantic_matched_terms, rendered_semantic_missing_terms = self._prompt_term_diagnostics(
+            prompt,
+            rendered_output_text,
             [],
         )
         generated_excerpt = combined_output_text[:500].strip()
         if not generated_excerpt:
             generated_excerpt = self._visual_text_excerpt(visual_review)[:500].strip()
+        render_loss_terms = [
+            term
+            for term in payload_semantic_matched_terms
+            if term not in rendered_semantic_matched_terms
+        ][:8]
 
         on_brand_base = (visual_brand * 0.5) + (text_brand * 0.35) + (usage_score * 0.15)
         on_brand_boosts, on_brand_penalties = self._component_effects(
@@ -767,18 +812,29 @@ class BrandScoringService:
                     "matched_terms": matched_terms,
                     "missing_terms": missing_terms,
                     "semantic_groups": {
-                        "matched": semantic_matched_terms[:8],
-                        "failed": semantic_missing_terms[:8],
+                        "matched": rendered_semantic_matched_terms[:8],
+                        "failed": rendered_semantic_missing_terms[:8],
                         "coverage_percent": int(
                             round(
                                 (
-                                    len(semantic_matched_terms)
-                                    / max(len(semantic_matched_terms) + len(semantic_missing_terms), 1)
+                                    len(rendered_semantic_matched_terms)
+                                    / max(len(rendered_semantic_matched_terms) + len(rendered_semantic_missing_terms), 1)
                                 )
                                 * 100.0
                             )
                         ),
                     },
+                    "payload_semantic_groups": {
+                        "matched": payload_semantic_matched_terms[:8],
+                        "failed": payload_semantic_missing_terms[:8],
+                    },
+                    "alignment_evidence": {
+                        "payload_text_prompt": round(float(self._prompt_alignment_score(prompt, payload_output_text, [])), 2),
+                        "rendered_text_prompt": round(float(self._prompt_alignment_score(prompt, rendered_output_text, [])), 2),
+                        "effective_text_prompt": round(text_prompt, 2),
+                    },
+                    "render_loss_detected": bool(render_loss_terms),
+                    "render_loss_terms": render_loss_terms,
                     "format_diagnostics": format_diagnostics,
                     "format": str(studio_panel.get("format") or "").strip() or None,
                     "output_asset_count": len(output_assets),
@@ -1205,6 +1261,63 @@ class BrandScoringService:
         return " ".join(excerpts[:6]).strip()
 
     @staticmethod
+    def _is_image_led_format(studio_panel: dict[str, Any], output_assets: list[dict[str, Any]]) -> bool:
+        format_name = str(studio_panel.get("format") or "").strip().lower()
+        if format_name not in {"static", "infographic", "carousel"}:
+            return False
+        return any(str(asset.get("asset_kind") or "").strip().lower() == "image" for asset in output_assets)
+
+    def _effective_prompt_alignment_score(
+        self,
+        *,
+        prompt: str,
+        studio_panel: dict[str, Any],
+        output_assets: list[dict[str, Any]],
+        payload_output_text: str,
+        rendered_output_text: str,
+        fallback_text: str,
+    ) -> int:
+        if not self._is_image_led_format(studio_panel, output_assets):
+            return self._prompt_alignment_score(prompt, fallback_text, [])
+        payload_score = float(self._prompt_alignment_score(prompt, payload_output_text, [])) if payload_output_text.strip() else 0.0
+        rendered_score = float(self._prompt_alignment_score(prompt, rendered_output_text, [])) if rendered_output_text.strip() else 0.0
+        if rendered_output_text.strip():
+            score = (
+                (rendered_score * self.IMAGE_RENDERED_EVIDENCE_WEIGHT)
+                + (payload_score * self.IMAGE_PAYLOAD_EVIDENCE_WEIGHT)
+            )
+        elif payload_output_text.strip():
+            score = payload_score
+        else:
+            score = float(self._prompt_alignment_score(prompt, fallback_text, []))
+        return max(0, min(100, int(round(score))))
+
+    def _effective_context_alignment_score(
+        self,
+        *,
+        context_reference: str,
+        studio_panel: dict[str, Any],
+        output_assets: list[dict[str, Any]],
+        payload_output_text: str,
+        rendered_output_text: str,
+        fallback_text: str,
+    ) -> int:
+        if not self._is_image_led_format(studio_panel, output_assets):
+            return self._context_alignment_score(context_reference, fallback_text)
+        payload_score = float(self._context_alignment_score(context_reference, payload_output_text)) if payload_output_text.strip() else 0.0
+        rendered_score = float(self._context_alignment_score(context_reference, rendered_output_text)) if rendered_output_text.strip() else 0.0
+        if rendered_output_text.strip():
+            score = (
+                (rendered_score * self.IMAGE_RENDERED_EVIDENCE_WEIGHT)
+                + (payload_score * self.IMAGE_PAYLOAD_EVIDENCE_WEIGHT)
+            )
+        elif payload_output_text.strip():
+            score = payload_score
+        else:
+            score = float(self._context_alignment_score(context_reference, fallback_text))
+        return max(0, min(100, int(round(score))))
+
+    @staticmethod
     def _source_usage_score(explainability: dict[str, Any]) -> int:
         input_access_summary = (
             explainability.get("input_access_summary")
@@ -1262,12 +1375,23 @@ class BrandScoringService:
         *,
         prompt: str,
         combined_output_text: str,
+        payload_output_text: str,
+        rendered_output_text: str,
         studio_panel: dict[str, Any],
         visual_review: dict[str, Any],
         output_assets: list[dict[str, Any]],
         generated_payload: dict[str, Any],
     ) -> int:
-        text_prompt = float(self._prompt_alignment_score(prompt, combined_output_text, []))
+        text_prompt = float(
+            self._effective_prompt_alignment_score(
+                prompt=prompt,
+                studio_panel=studio_panel,
+                output_assets=output_assets,
+                payload_output_text=payload_output_text,
+                rendered_output_text=rendered_output_text,
+                fallback_text=combined_output_text,
+            )
+        )
         visual_prompt = float(visual_review.get("prompt_alignment_score") or text_prompt or 70.0)
         format_score = float(
             self._format_fit_score(
@@ -1288,6 +1412,10 @@ class BrandScoringService:
         *,
         prompt: str,
         combined_output_text: str,
+        payload_output_text: str,
+        rendered_output_text: str,
+        studio_panel: dict[str, Any],
+        output_assets: list[dict[str, Any]],
         tone_feedback: dict[str, Any],
         persona_context: dict[str, Any],
         objective_context: dict[str, Any],
@@ -1300,7 +1428,16 @@ class BrandScoringService:
             brand_context=brand_context,
         )
         if context_reference:
-            context_score = float(self._context_alignment_score(context_reference, combined_output_text))
+            context_score = float(
+                self._effective_context_alignment_score(
+                    context_reference=context_reference,
+                    studio_panel=studio_panel,
+                    output_assets=output_assets,
+                    payload_output_text=payload_output_text,
+                    rendered_output_text=rendered_output_text,
+                    fallback_text=combined_output_text,
+                )
+            )
         else:
             context_score = 70.0
         dimensions = tone_feedback.get("persuasion_dimensions") if isinstance(tone_feedback.get("persuasion_dimensions"), dict) else {}
@@ -1312,7 +1449,16 @@ class BrandScoringService:
                 float(dimensions.get("distinctiveness") or 0.0),
             ]
         )
-        prompt_support = float(self._prompt_alignment_score(prompt, combined_output_text, []))
+        prompt_support = float(
+            self._effective_prompt_alignment_score(
+                prompt=prompt,
+                studio_panel=studio_panel,
+                output_assets=output_assets,
+                payload_output_text=payload_output_text,
+                rendered_output_text=rendered_output_text,
+                fallback_text=combined_output_text,
+            )
+        )
         visual_quality = mean(
             [
                 float(visual_review.get("layout_readability_score") or 70.0),
