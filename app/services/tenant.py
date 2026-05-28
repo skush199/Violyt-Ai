@@ -3,13 +3,15 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import app.models  # noqa: F401
 from app.core.enums import RoleCode
 from app.core.exceptions import DuplicateResourceError, NotFoundError
+from app.db.base import Base
 from app.integrations.object_storage import LocalObjectStorage
-from app.models.brand import BrandSpaceMember
+from app.models.brand import BrandSpace, BrandSpaceMember
 from app.models.collaboration import UsageLimit
 from app.models.content import ContentVersion, GeneratedAsset
 from app.models.knowledge import KnowledgeAsset
@@ -356,6 +358,48 @@ class TenantService:
         await self.session.commit()
         await self.session.refresh(tenant)
         return tenant
+
+    async def delete_tenant(self, tenant_id: UUID) -> None:
+        tenant = await self.get_tenant(tenant_id)
+        if tenant.logo_asset_path:
+            self.storage.delete(tenant.logo_asset_path)
+
+        user_ids = list(
+            (await self.session.execute(select(User.id).where(User.tenant_id == tenant_id)))
+            .scalars()
+            .all()
+        )
+        brand_space_ids = list(
+            (await self.session.execute(select(BrandSpace.id).where(BrandSpace.tenant_id == tenant_id)))
+            .scalars()
+            .all()
+        )
+
+        if user_ids:
+            await self.session.execute(
+                delete(ActivationToken).where(ActivationToken.user_id.in_(user_ids))
+            )
+            await self.session.execute(delete(UserRole).where(UserRole.user_id.in_(user_ids)))
+        if brand_space_ids:
+            await self.session.execute(
+                delete(UserRole).where(UserRole.brand_space_id.in_(brand_space_ids))
+            )
+
+        await self.session.execute(
+            update(BrandSpace)
+            .where(BrandSpace.tenant_id == tenant_id)
+            .values(default_persona_id=None)
+        )
+
+        for table in reversed(Base.metadata.sorted_tables):
+            if table.name == Tenant.__tablename__ or "tenant_id" not in table.c:
+                continue
+            await self.session.execute(
+                table.delete().where(table.c.tenant_id == tenant_id)
+            )
+
+        await self.session.execute(delete(Tenant).where(Tenant.id == tenant_id))
+        await self.session.commit()
 
     async def upload_logo(self, tenant_id: UUID, payload: TenantLogoUploadRequest) -> Tenant:
         tenant = await self.get_tenant(tenant_id)

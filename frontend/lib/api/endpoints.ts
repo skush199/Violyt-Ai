@@ -63,6 +63,7 @@ export const API = {
     CREATE: { method: "POST", url: "/api/v1/tenants" } as ApiEndpoint<unknown, TenantCreateResponse>,
     DETAIL: { method: "GET", url: (tenantId: string) => `/api/v1/tenants/${tenantId}` } as ApiEndpoint<void, TenantSummaryResponse>,
     UPDATE: { method: "PUT", url: (tenantId: string) => `/api/v1/tenants/${tenantId}` } as ApiEndpoint<unknown, TenantSummaryResponse>,
+    DELETE: { method: "DELETE", url: (tenantId: string) => `/api/v1/tenants/${tenantId}` } as ApiEndpoint<void, { message: string }>,
     UPLOAD_LOGO: { method: "POST", url: (tenantId: string) => `/api/v1/tenants/${tenantId}/logo` } as ApiEndpoint<TenantLogoUploadRequest, TenantSummaryResponse>,
     USERS: { method: "GET", url: (tenantId: string) => `/api/v1/tenants/${tenantId}/users` } as ApiEndpoint<void, TenantUserResponse[]>,
     BRAND_SPACES: { method: "GET", url: (tenantId: string) => `/api/v1/tenants/${tenantId}/brand-spaces` } as ApiEndpoint<void, TenantBrandSpaceSummaryResponse[]>,

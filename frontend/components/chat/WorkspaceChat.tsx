@@ -24,6 +24,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { PageHeading, SurfaceCard, UsageRing } from "@/components/common/DesignPrimitives";
 import type {
   AssetReference,
+  BrandScoringPayload,
   ChatAssistantStructuredPayload,
   GenerationDecision,
   KnowledgeAssetResponse,
@@ -196,6 +197,71 @@ function resolveGenerationDecision(payload: ChatAssistantStructuredPayload | Rec
       ? (typedPayload.renderer_metadata as Record<string, unknown>)
       : null;
   return coerceGenerationDecision(typedPayload.generation_decision || rendererMetadata?.layout_decision);
+}
+
+function resolveBrandScoring(payload: ChatAssistantStructuredPayload | Record<string, unknown> | undefined) {
+  if (!payload || Array.isArray(payload)) {
+    return null;
+  }
+  const typedPayload = payload as ChatAssistantStructuredPayload;
+  const scoring = typedPayload.brand_scoring;
+  if (
+    !scoring ||
+    typeof scoring.overall_score !== "number" ||
+    typeof scoring.score_breakdown?.on_brand !== "number" ||
+    typeof scoring.score_breakdown?.prompt_adherence !== "number" ||
+    typeof scoring.score_breakdown?.relevance !== "number"
+  ) {
+    return null;
+  }
+  return scoring;
+}
+
+function ScorePill({ label, value }: { label: string; value: number }) {
+  const toneClass =
+    value >= 75
+      ? "border-primary/18 bg-primary/10 text-primary"
+      : value >= 55
+        ? "border-primary/14 bg-white text-primary"
+        : "border-primary/10 bg-white text-[#6C63A8]";
+  return (
+    <div
+      className={`flex min-w-[118px] items-center justify-between gap-3 rounded-[16px] border px-3 py-2 shadow-[0_12px_24px_-24px_rgba(60,47,143,0.35)] ${toneClass}`}
+    >
+      <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">{label}</p>
+      <p className="text-base font-semibold text-slate-900">{Math.round(value)}</p>
+    </div>
+  );
+}
+
+function BrandScoringCard({ scoring }: { scoring: BrandScoringPayload }) {
+  const overallScore = Math.round(scoring.overall_score);
+  const overallToneClass =
+    overallScore >= 75
+      ? "border-primary/20 bg-primary text-white"
+      : overallScore >= 55
+        ? "border-primary/16 bg-primary/12 text-primary"
+        : "border-primary/12 bg-white text-[#6C63A8]";
+
+  return (
+    <div className="mt-4 overflow-hidden rounded-[24px] border border-[#E8EBF4] bg-[#FBFBFE] px-4 py-3 shadow-[0_18px_42px_-34px_rgba(60,47,143,0.22)]">
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Brand Evaluation</p>
+            <span className={`inline-flex items-center rounded-[14px] border px-2.5 py-1 text-xs font-semibold shadow-[0_10px_24px_-24px_rgba(60,47,143,0.35)] ${overallToneClass}`}>
+              Overall {overallScore}
+            </span>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+          <ScorePill label="On-Brand" value={scoring.score_breakdown.on_brand} />
+          <ScorePill label="Prompt" value={scoring.score_breakdown.prompt_adherence} />
+          <ScorePill label="Relevance" value={scoring.score_breakdown.relevance} />
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function assetPreviewLabel(asset: KnowledgeAssetResponse) {
@@ -969,6 +1035,7 @@ export default function WorkspaceChat({ brandKey }: WorkspaceChatProps) {
                       const previewAssets = message.role === "assistant" ? resolveGeneratedImageAssets(message.structured_payload) : [];
                       const previewUrl = previewAssets[0]?.asset_url || undefined;
                       const generationDecision = message.role === "assistant" ? resolveGenerationDecision(message.structured_payload) : null;
+                      const brandScoring = message.role === "assistant" ? resolveBrandScoring(message.structured_payload) : null;
                       const imageStatus =
                         message.role === "assistant" &&
                         !previewUrl &&
@@ -1025,6 +1092,7 @@ export default function WorkspaceChat({ brandKey }: WorkspaceChatProps) {
                               )}
                             </div>
                           ) : null}
+                          {brandScoring ? <BrandScoringCard scoring={brandScoring} /> : null}
                           {imageStatus === "not_generated" ? <p className="mt-3 text-sm text-slate-500">Image generation was requested, but no generated image asset was returned for this message.</p> : null}
                         </div>
                       );

@@ -608,7 +608,7 @@ def test_orchestrator_logo_safe_zone_guidance_prefers_top_right_hint_and_minimum
     )
 
     assert "top-right" in guidance
-    assert "24% of the width" in guidance
+    assert "20% of the width" in guidance
 
 
 def test_orchestrator_logo_safe_zone_guidance_respects_viable_synthesized_logo_geometry() -> None:
@@ -654,7 +654,7 @@ def test_orchestrator_logo_safe_zone_guidance_respects_viable_synthesized_logo_g
     guidance = AIOrchestratorService._logo_safe_zone_guidance(request, scene_graph, hint="Top-right")
 
     assert "top-right" in guidance
-    assert "19% of the width" in guidance
+    assert "17% of the width" in guidance
 
 
 def test_orchestrator_build_carousel_slide_render_prompt_uses_slide_or_planning_logo_hint() -> None:
@@ -784,6 +784,26 @@ def test_orchestrator_build_carousel_slide_render_prompt_prefers_brand_logo_poli
 
     assert "top-right" in prompt
     assert "bottom-right" not in prompt
+
+
+def test_orchestrator_logo_policy_does_not_expand_explicit_allowed_positions() -> None:
+    policy = AIOrchestratorService._brand_logo_placement_policy(
+        {
+            "visual_identity": {
+                "logo_position": "top-right",
+                "design_system": {"logo_anchor": "bottom-right"},
+                "logo_placement": {
+                    "allowed_positions": ["top-left"],
+                    "default_position": "top-left",
+                },
+            }
+        }
+    )
+
+    assert policy == {
+        "allowed_positions": ["top-left"],
+        "default_position": "top-left",
+    }
 
 
 def test_orchestrator_build_final_render_prompt_includes_design_system_guidance() -> None:
@@ -5585,6 +5605,7 @@ def test_merge_vision_page_blueprint_translates_ocr_craft_and_counts() -> None:
     assert merged["premium_quality"]["overall_score"] == 0.91
     assert merged["vision_analysis_status"] == "openai_vision_enhanced"
 
+<<<<<<< dev2-kushal
 
 def test_adapt_slide_copy_to_sample_blueprint_enforces_capacity_and_cta_permission() -> None:
     slide = {
@@ -5600,18 +5621,62 @@ def test_adapt_slide_copy_to_sample_blueprint_enforces_capacity_and_cta_permissi
                 "density": "balanced",
                 "module_counts": {"card_like_count": 2, "horizontal_band_count": 0},
                 "visual_permissions": {"cta_allowed": False},
+=======
+def test_orchestrator_default_logo_safe_zone_geometry_uses_20px_edge_margin() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a branded post",
+        studio_panel={"size": {"width": 1080, "height": 1350}, "platform_preset": "linkedin", "format": "static", "file_type": "png"},
+        resolved_brand_context={
+            "visual_identity": {
+                "reference_creatives": [
+                    {"layout_structure": {"zones": [{"role": "logo", "x": 0.03, "y": 0.03, "w": 0.14, "h": 0.08}]}}
+                ]
+>>>>>>> dev-ai
             }
         },
     }
 
     adapted = AIOrchestratorService._adapt_slide_copy_to_sample_blueprint(slide)
 
+<<<<<<< dev2-kushal
     assert adapted["cta"] == ""
     assert len(adapted["proof_points"]) == 2
     assert adapted["body_points"] == []
     assert adapted["stat_highlights"] == []
     assert len(adapted["supporting_line"]) <= 140
     assert adapted["metadata"]["sample_copy_density_enforced"]["max_items"] == 2
+=======
+    assert round(geometry[0], 4) == round(20 / 1080, 4)
+    assert round(geometry[1], 4) == round(20 / 1350, 4)
+    assert geometry[2] >= 0.14
+
+
+def test_orchestrator_normalized_logo_safe_zone_snaps_viable_box_to_20px_edge() -> None:
+    request = AIOrchestrationRequest(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        user_id=uuid4(),
+        prompt="Create a branded post",
+        studio_panel={"size": {"width": 1024, "height": 1536}, "platform_preset": "linkedin", "format": "static", "file_type": "png"},
+        resolved_brand_context={},
+        persona_context={},
+        objective_context={},
+        retrieved_knowledge={},
+    )
+
+    geometry = AIOrchestratorService._normalize_logo_safe_zone_geometry(
+        request=request,
+        geometry=(0.08, 0.09, 0.2, 0.08),
+        hint="top-left",
+    )
+
+    assert round(geometry[0], 4) == round(20 / 1024, 4)
+    assert round(geometry[1], 4) == round(20 / 1536, 4)
+    assert geometry[2] == 0.17
+>>>>>>> dev-ai
 
 
 def test_adapt_slide_copy_to_sample_blueprint_expands_numbered_rows_from_approved_facts() -> None:
@@ -5660,11 +5725,16 @@ def test_adapt_slide_copy_to_sample_blueprint_expands_numbered_rows_from_approve
         content_metadata=content_metadata,
     )
 
+<<<<<<< dev2-kushal
     assert adapted["metadata"]["sample_row_list_target_count"] == 7
     assert len(adapted["proof_points"]) == 7
     assert adapted["body_points"] == []
     assert "line graph" not in adapted["visual_focus"].lower()
     assert "observed row/list module structure" in adapted["visual_focus"]
+=======
+    assert geometry[2] >= 0.15
+    assert geometry[3] >= 0.085
+>>>>>>> dev-ai
 
 
 def test_adapt_slide_copy_to_sample_blueprint_prefers_derived_rows_over_cover_label() -> None:
@@ -13053,6 +13123,7 @@ def test_style_reference_only_final_asset_metadata_strips_backend_overlay_payloa
     assert "render_overlay_scene_graph" not in metadata
     assert "render_overlay_text" not in metadata
 
+<<<<<<< dev2-kushal
 
 def test_assess_creative_quality_flags_unrelated_selected_reference_when_topic_pdf_exists() -> None:
     fta_asset = {
@@ -13075,6 +13146,150 @@ def test_assess_creative_quality_flags_unrelated_selected_reference_when_topic_p
             "summary": "OPEC oil production template with unrelated commodity market layout.",
         },
     }
+=======
+def test_generation_trace_service_enriches_readable_json_without_touching_text_output() -> None:
+    trace_base = Path("storage") / "generation_traces" / "test-traces" / str(uuid4())
+    readable_base = Path("storage") / "readable_generation_traces"
+    service = GenerationTraceService(base_dir=trace_base, enabled=True)
+
+    try:
+        trace = service.start_trace(
+            prompt="Create a seafood brand campaign visual.",
+            tenant_id=uuid4(),
+            brand_space_id=uuid4(),
+        )
+        assert trace is not None
+
+        trace_id = trace["trace_id"]
+        readable_bundle = service.build_visual_generation_readable_bundle(
+            trace_id=trace_id,
+            prompt="Create a seafood brand campaign visual.",
+            tenant_id=uuid4(),
+            brand_space_id=uuid4(),
+            studio_panel={"platform_preset": "instagram", "format": "static", "file_type": "png"},
+            request_payload={"prompt": "Create a seafood brand campaign visual.", "generate_image": True},
+            section_payloads={
+                "identity": {
+                    "brand_name": "The Good Fish Company",
+                    "brand_description": "Seafood-first trusted sourcing platform.",
+                },
+                "visual_identity": {
+                    "brand_mood": "fresh, clean, premium",
+                    "brand_color_palette": {"primary": "#1CA9C9"},
+                },
+            },
+            runtime_brand_context={
+                "identity": {
+                    "brand_name": "The Good Fish Company",
+                    "brand_description": "Seafood-first trusted sourcing platform.",
+                },
+                "visual_identity": {
+                    "brand_mood": "fresh, clean, premium",
+                    "brand_color_palette": {"primary": "#1CA9C9"},
+                },
+            },
+            persona_context={"name": "Urban seafood buyer", "audience_goals": ["trust online seafood freshness"]},
+            objective_context={"name": "Trust building", "configuration": {"cta_bias": "learn_more"}},
+            reference_assets=[
+                {
+                    "asset_id": str(uuid4()),
+                    "asset_role": "reference_creative",
+                    "storage_path": "tenant/brand/reference/reference-1.png",
+                    "trust_level": "trusted",
+                    "metadata": {"label": "Premium seafood reference"},
+                }
+            ],
+            template_candidates=[
+                {
+                    "template_id": str(uuid4()),
+                    "name": "Editorial seafood template",
+                    "score": 9.2,
+                    "match_type": "adapted_template",
+                }
+            ],
+            template_context={"selected_template_id": str(uuid4()), "selected_template_name": "Editorial seafood template"},
+            retrieved_knowledge={
+                "visual_identity": [
+                    {
+                        "score": 0.11,
+                        "content": "Use clean editorial seafood textures with aqua-led accents.",
+                        "metadata": {"source_id": "knowledge-1"},
+                    }
+                ]
+            },
+            planning_hints={"mode": "adapted_template", "template_name": "Editorial seafood template"},
+            logo_candidates=[{"asset_id": "logo-1", "storage_path": "tenant/brand/logo/logo.png"}],
+            logo_selection={"storage_path": "tenant/brand/logo/logo.png"},
+            generated_payload={"headline": "Fresh seafood, sourced with trust."},
+            blueprint_payload={"layout": "single_panel"},
+            explainability={
+                "compiled_context": {
+                    "brand_copy_brief": {"brand_name": "The Good Fish Company"},
+                    "brand_visual_brief": {"brand_mood": "fresh, clean, premium"},
+                },
+                "input_access_summary": {
+                    "brand_context": {
+                        "used_paths": ["identity.brand_name", "visual_identity.brand_mood"],
+                        "unused_paths": ["identity.brand_description", "visual_identity.brand_color_palette.primary"],
+                        "read_counts": {
+                            "identity.brand_name": 2,
+                            "visual_identity.brand_mood": 1,
+                        },
+                        "access_types": {
+                            "identity.brand_name": ["get", "__getitem__"],
+                            "visual_identity.brand_mood": ["get"],
+                        },
+                        "events": [
+                            {"timestamp": "2026-05-20T12:00:00", "path": "identity.brand_name", "access_type": "get"},
+                            {"timestamp": "2026-05-20T12:00:01", "path": "visual_identity.brand_mood", "access_type": "get"},
+                        ],
+                    },
+                },
+                "selected_reference_images": [
+                    {
+                        "asset_id": str(uuid4()),
+                        "asset_role": "reference_creative",
+                        "storage_path": "tenant/brand/reference/reference-1.png",
+                        "trust_level": "trusted",
+                        "metadata": {"label": "Premium seafood reference"},
+                    }
+                ],
+                "generation_trace": {"layout_source": "reference_template"},
+                "render_authority": "ai",
+                "generation_path": "image_led_social",
+            },
+        )
+
+        written_files = service.write_visual_generation_readable_bundle(trace_id, readable_bundle)
+        assert written_files
+
+        readable_dir = readable_base / trace_id
+        json_path = readable_dir / "planning_strategy.json"
+        text_path = readable_dir / "planning_strategy.txt"
+        assert json_path.exists()
+        assert text_path.exists()
+
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+        assert "full_trace_logs" in payload
+        assert payload["full_trace_logs"]["trace_manifest"]["trace_id"] == trace_id
+        assert payload["full_trace_logs"]["runtime_brand_context"]["identity"]["brand_name"] == "The Good Fish Company"
+        assert payload["full_trace_logs"]["input_access_summary"]["brand_context"]["used_paths"] == [
+            "identity.brand_name",
+            "visual_identity.brand_mood",
+        ]
+        assert payload["full_trace_logs"]["brand_usage_snapshot"]["sources_used"]["brand_form_data"]["identity"]["used"] is True
+        assert "Brand Following Score" in text_path.read_text(encoding="utf-8")
+    finally:
+        if trace_base.exists():
+            rmtree(trace_base, ignore_errors=True)
+        readable_dir = readable_base / trace_id if trace is not None else None
+        if readable_dir and readable_dir.exists():
+            rmtree(readable_dir, ignore_errors=True)
+
+
+def test_orchestrator_selects_multiple_reference_images_for_carousel() -> None:
+    service = AIOrchestratorService()
+>>>>>>> dev-ai
     request = AIOrchestrationRequest(
         tenant_id=uuid4(),
         brand_space_id=uuid4(),

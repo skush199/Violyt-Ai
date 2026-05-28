@@ -130,15 +130,17 @@ export function StyledSelect({
   onValueChange,
   placeholder,
   options,
+  disabled = false,
 }: {
   value: string;
   onValueChange: (value: string) => void;
   placeholder: string;
   options: readonly string[];
+  disabled?: boolean;
 }) {
   return (
-    <Select value={value || undefined} onValueChange={onValueChange}>
-      <SelectTrigger className="h-12 w-full rounded-xl border-none bg-input-field px-4 py-3 text-left text-sm shadow-none focus-visible:ring-2 focus-visible:ring-primary/20">
+    <Select value={value || undefined} onValueChange={onValueChange} disabled={disabled}>
+      <SelectTrigger className="h-12 w-full rounded-xl border-none bg-input-field px-4 py-3 text-left text-sm shadow-none focus-visible:ring-2 focus-visible:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-60">
         <SelectValue placeholder={placeholder} />
       </SelectTrigger>
       <SelectContent>

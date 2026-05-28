@@ -36,7 +36,7 @@ from app.ai.layout_decision import LayoutDecisionEngine
 from app.ai.orchestrator import AIOrchestratorService
 from app.ai.session_memory import SessionMemoryPlanner
 from app.ai.tone_intelligence import ToneIntelligenceService
-from app.core.enums import AssetRole, BrandSpaceLifecycle
+from app.core.enums import AssetRole, BrandSpaceLifecycle, JobType
 from app.core.enums import ContentLifecycle, KnowledgeChannel, UsageMetricCode
 from app.core.exceptions import GenerationFailureError, LifecycleError, NotFoundError
 from app.core.studio import resolve_studio_panel_defaults
@@ -49,6 +49,7 @@ from app.repositories.knowledge import KnowledgeAssetRepository, TemplateMetadat
 from app.schemas.content import ContentGenerateRequest, ContentRewriteRequest, ToneCheckRequest
 from app.services.artifact_state import ArtifactStateService
 from app.services.asset_delivery import AssetDeliveryService
+from app.services.brand_scoring import BrandScoringService
 from app.services.content_planning import ContentPlanningService
 from app.services.content_format_guide import ContentFormatGuideService
 from app.services.knowledge import KnowledgeService
@@ -60,6 +61,7 @@ from app.services.renderer import RendererService
 from app.services.research_editorial_planning import ResearchEditorialPlanningService
 from app.services.template import TemplateService
 from app.services.usage import UsageLimitService
+from app.services.jobs import JobService
 from app.services.visual_planning import VisualPlanningService
 from app.utils.input_access_tracking import InputAccessTracker
 from app.utils.image_assets import open_image_asset
@@ -229,7 +231,39 @@ class ContentService:
         self.visual_planning = VisualPlanningService()
         self.artifacts = ArtifactStateService()
         self.trace = GenerationTraceService()
+        self.brand_scoring = BrandScoringService(session)
         self.storage = LocalObjectStorage()
+
+    async def _enqueue_ragas_evaluation_after_generation(
+        self,
+        trace_id: str | None,
+        *,
+        tenant_id: UUID,
+        brand_space_id: UUID,
+        content_version_id: UUID,
+        generated_image_count: int,
+    ) -> None:
+        if not trace_id or generated_image_count <= 0:
+            return
+
+        try:
+            job = await JobService(self.session).create(
+                tenant_id=tenant_id,
+                brand_space_id=brand_space_id,
+                content_version_id=content_version_id,
+                job_type=JobType.RAGAS_EVALUATION,
+                payload={
+                    "trace_id": trace_id,
+                    "generated_image_count": generated_image_count,
+                },
+            )
+            logger.info(
+                "content.generate.ragas_evaluation_queued trace_id=%s job_id=%s",
+                trace_id,
+                job.id,
+            )
+        except Exception:
+            logger.exception("content.generate.ragas_evaluation_queue_failed trace_id=%s", trace_id)
 
     @staticmethod
     def _merge_studio_panel(base: dict | None, override: dict | None) -> dict:
@@ -3378,6 +3412,139 @@ class ContentService:
             cleared.alpha_composite(blended, (left, top))
         return cleared, True
 
+    @staticmethod
+    def _logo_pixel_is_mark(
+        pixel: tuple[int, int, int, int],
+        matte: tuple[int, int, int],
+    ) -> bool:
+        red, green, blue, alpha = pixel
+        if alpha <= 24:
+            return False
+        distance = max(abs(red - matte[0]), abs(green - matte[1]), abs(blue - matte[2]))
+        chroma = max(red, green, blue) - min(red, green, blue)
+        return distance >= 50 or (distance >= 32 and chroma >= 26)
+
+    @staticmethod
+    def _logo_pixel_is_high_signal_mark(pixel: tuple[int, int, int, int]) -> bool:
+        red, green, blue, alpha = pixel
+        if alpha <= 24:
+            return False
+        chroma = max(red, green, blue) - min(red, green, blue)
+        luminance = (0.2126 * red) + (0.7152 * green) + (0.0722 * blue)
+        return (chroma >= 32 and luminance <= 248) or luminance <= 120
+
+    @staticmethod
+    def _median_edge_color(image: Image.Image) -> tuple[int, int, int] | None:
+        rgba = image.convert("RGBA")
+        width, height = rgba.size
+        if width <= 0 or height <= 0:
+            return None
+        pixels = rgba.load()
+        edge_pixels: list[tuple[int, int, int, int]] = []
+        for x in range(width):
+            edge_pixels.append(pixels[x, 0])
+            edge_pixels.append(pixels[x, height - 1])
+        for y in range(1, max(height - 1, 1)):
+            edge_pixels.append(pixels[0, y])
+            edge_pixels.append(pixels[width - 1, y])
+        opaque_edges = [pixel for pixel in edge_pixels if pixel[3] > 220]
+        if not opaque_edges:
+            return None
+        return (
+            sorted(pixel[0] for pixel in opaque_edges)[len(opaque_edges) // 2],
+            sorted(pixel[1] for pixel in opaque_edges)[len(opaque_edges) // 2],
+            sorted(pixel[2] for pixel in opaque_edges)[len(opaque_edges) // 2],
+        )
+
+    @classmethod
+    def _visual_logo_mark_bbox(
+        cls,
+        image: Image.Image,
+        matte: tuple[int, int, int],
+    ) -> tuple[int, int, int, int] | None:
+        rgba = image.convert("RGBA")
+        pixels = rgba.load()
+        left = rgba.width
+        top = rgba.height
+        right = 0
+        bottom = 0
+        for y in range(rgba.height):
+            for x in range(rgba.width):
+                if not cls._logo_pixel_is_mark(pixels[x, y], matte):
+                    continue
+                left = min(left, x)
+                top = min(top, y)
+                right = max(right, x + 1)
+                bottom = max(bottom, y + 1)
+        if right <= left or bottom <= top:
+            return None
+        return (left, top, right, bottom)
+
+    @classmethod
+    def _visual_logo_high_signal_bbox(cls, image: Image.Image) -> tuple[int, int, int, int] | None:
+        rgba = image.convert("RGBA")
+        pixels = rgba.load()
+        left = rgba.width
+        top = rgba.height
+        right = 0
+        bottom = 0
+        for y in range(rgba.height):
+            for x in range(rgba.width):
+                if not cls._logo_pixel_is_high_signal_mark(pixels[x, y]):
+                    continue
+                left = min(left, x)
+                top = min(top, y)
+                right = max(right, x + 1)
+                bottom = max(bottom, y + 1)
+        if right <= left or bottom <= top:
+            return None
+        return (left, top, right, bottom)
+
+    @classmethod
+    def _remove_logo_matte_pixels(
+        cls,
+        image: Image.Image,
+        matte: tuple[int, int, int],
+    ) -> Image.Image:
+        cleaned = image.convert("RGBA").copy()
+        pixels = cleaned.load()
+        for y in range(cleaned.height):
+            for x in range(cleaned.width):
+                if cls._logo_pixel_is_mark(pixels[x, y], matte):
+                    continue
+                red, green, blue, _alpha = pixels[x, y]
+                pixels[x, y] = (red, green, blue, 0)
+        return cleaned
+
+    @classmethod
+    def _remove_low_signal_logo_pixels(cls, image: Image.Image) -> Image.Image:
+        cleaned = image.convert("RGBA").copy()
+        pixels = cleaned.load()
+        for y in range(cleaned.height):
+            for x in range(cleaned.width):
+                if cls._logo_pixel_is_high_signal_mark(pixels[x, y]):
+                    continue
+                red, green, blue, _alpha = pixels[x, y]
+                pixels[x, y] = (red, green, blue, 0)
+        return cleaned
+
+    @staticmethod
+    def _logo_bbox_has_large_margins(
+        *,
+        image_width: int,
+        image_height: int,
+        bbox: tuple[int, int, int, int],
+    ) -> bool:
+        visual_width = bbox[2] - bbox[0]
+        visual_height = bbox[3] - bbox[1]
+        visual_area = visual_width * visual_height
+        image_area = max(image_width * image_height, 1)
+        return (
+            visual_area <= image_area * 0.88
+            or visual_width <= int(image_width * 0.94)
+            or visual_height <= int(image_height * 0.94)
+        )
+
     @classmethod
     def _trim_transparent_logo_margins(cls, image: Image.Image) -> Image.Image:
         rgba = image.convert("RGBA")
@@ -3385,10 +3552,33 @@ class ContentService:
         bbox = alpha.getbbox()
         if not bbox:
             return rgba
-        left, top, right, bottom = bbox
-        if left == 0 and top == 0 and right == rgba.width and bottom == rgba.height:
-            return rgba
-        return rgba.crop(bbox)
+        cropped = rgba.crop(bbox)
+        matte = cls._edge_matte_color(cropped)
+        if matte is None and cls._edge_background_should_strip(cropped, threshold=235):
+            matte = cls._median_edge_color(cropped)
+        if matte is not None:
+            visual_bbox = cls._visual_logo_mark_bbox(cropped, matte)
+            if visual_bbox is not None:
+                if cls._logo_bbox_has_large_margins(
+                    image_width=cropped.width,
+                    image_height=cropped.height,
+                    bbox=visual_bbox,
+                ):
+                    cleaned = cls._remove_logo_matte_pixels(cropped, matte)
+                    cleaned_bbox = cleaned.getchannel("A").getbbox()
+                    if cleaned_bbox:
+                        return cleaned.crop(cleaned_bbox)
+        visual_bbox = cls._visual_logo_high_signal_bbox(cropped)
+        if visual_bbox is not None and cls._logo_bbox_has_large_margins(
+            image_width=cropped.width,
+            image_height=cropped.height,
+            bbox=visual_bbox,
+        ):
+            cleaned = cls._remove_low_signal_logo_pixels(cropped)
+            cleaned_bbox = cleaned.getchannel("A").getbbox()
+            if cleaned_bbox:
+                return cleaned.crop(cleaned_bbox)
+        return cropped
 
     @staticmethod
     def _logo_footprint_clearance_box(
@@ -3504,8 +3694,12 @@ class ContentService:
                 continue
             try:
                 with open_image_asset(self.storage.absolute_path(storage_path)) as raw_logo:
+                    logo_source = self._resize_logo_source_for_overlay(
+                        raw_logo,
+                        target_box=logo_box,
+                    )
                     prepared_logo = self._trim_transparent_logo_margins(
-                        self._strip_logo_background_if_safe(raw_logo.convert("RGBA"))
+                        self._strip_logo_background_if_safe(logo_source)
                     )
             except OSError:
                 continue
@@ -3941,6 +4135,21 @@ class ContentService:
         except (UnicodeEncodeError, UnicodeDecodeError):
             return text
         return repaired or text
+
+    @classmethod
+    def _strip_null_bytes(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.replace("\x00", "")
+        if isinstance(value, dict):
+            return {
+                key: cls._strip_null_bytes(nested)
+                for key, nested in value.items()
+            }
+        if isinstance(value, list):
+            return [cls._strip_null_bytes(item) for item in value]
+        if isinstance(value, tuple):
+            return [cls._strip_null_bytes(item) for item in value]
+        return value
 
     @classmethod
     def _sequence_pack_is_weak_hint(cls, value: object) -> bool:
@@ -6972,6 +7181,24 @@ class ContentService:
         return cleaned
 
     @staticmethod
+    def _resize_logo_source_for_overlay(
+        image: Image.Image,
+        *,
+        target_box: tuple[int, int, int, int] | None = None,
+    ) -> Image.Image:
+        rgba = image.convert("RGBA")
+        target_width = int((target_box or (0, 0, 0, 0))[2] or 0)
+        target_height = int((target_box or (0, 0, 0, 0))[3] or 0)
+        target_side = max(target_width, target_height, 96)
+        max_side = max(512, min(2048, target_side * 6))
+        current_side = max(rgba.size)
+        if current_side <= max_side:
+            return rgba
+        resized = rgba.copy()
+        resized.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+        return resized
+
+    @staticmethod
     def _flatten_image_for_jpg(image: Image.Image) -> Image.Image:
         if image.mode != "RGBA":
             return image.convert("RGB")
@@ -7289,6 +7516,140 @@ class ContentService:
             return None
         return (vertical, horizontal)
 
+    @classmethod
+    def _normalize_logo_position_option(cls, value: object) -> str:
+        text = str(value or "").strip().lower().replace("_", "-").replace(" ", "-")
+        while "--" in text:
+            text = text.replace("--", "-")
+        aliases = {
+            "upper-right": "top-right",
+            "right-top": "top-right",
+            "upper-left": "top-left",
+            "left-top": "top-left",
+            "lower-right": "bottom-right",
+            "right-bottom": "bottom-right",
+            "lower-left": "bottom-left",
+            "left-bottom": "bottom-left",
+            "top-middle": "top-center",
+            "middle-top": "top-center",
+            "bottom-middle": "bottom-center",
+            "middle-bottom": "bottom-center",
+            "middle": "center",
+            "middle-center": "center",
+            "center-middle": "center",
+        }
+        text = aliases.get(text, text)
+        return text if text in {
+            "top-right",
+            "top-left",
+            "bottom-right",
+            "bottom-left",
+            "top-center",
+            "bottom-center",
+            "center",
+        } else ""
+
+    @classmethod
+    def _logo_anchor_to_position(cls, anchor: tuple[str, str]) -> str:
+        vertical, horizontal = anchor
+        if vertical == "middle" and horizontal == "center":
+            return "center"
+        return f"{vertical}-{horizontal}"
+
+    @classmethod
+    def _logo_anchor_from_position(cls, position: str) -> tuple[str, str] | None:
+        normalized = cls._normalize_logo_position_option(position)
+        if not normalized:
+            return None
+        if normalized == "center":
+            return ("middle", "center")
+        vertical, horizontal = normalized.split("-", 1)
+        return (vertical, horizontal)
+
+    @classmethod
+    def _brand_logo_placement_policy_from_payloads(
+        cls,
+        content: ContentVersion,
+        explainability: dict,
+    ) -> dict[str, object]:
+        visual_identity = {}
+        for payload in (
+            explainability,
+            content.explainability_metadata if isinstance(content.explainability_metadata, dict) else {},
+        ):
+            if not isinstance(payload, dict):
+                continue
+            snapshot = payload.get("brand_context_snapshot")
+            if isinstance(snapshot, dict) and isinstance(snapshot.get("visual_identity"), dict):
+                visual_identity = snapshot["visual_identity"]
+                break
+            if isinstance(payload.get("visual_identity"), dict):
+                visual_identity = payload["visual_identity"]
+                break
+        placement = visual_identity.get("logo_placement") if isinstance(visual_identity.get("logo_placement"), dict) else {}
+        allowed: list[str] = []
+        for raw_position in placement.get("allowed_positions") or placement.get("positions") or []:
+            normalized = cls._normalize_logo_position_option(raw_position)
+            if normalized and normalized not in allowed:
+                allowed.append(normalized)
+        has_explicit_allowed_positions = bool(allowed)
+        default_position = cls._normalize_logo_position_option(
+            placement.get("default_position")
+            or placement.get("preferred_position")
+            or placement.get("logo_position")
+            or visual_identity.get("logo_position")
+        )
+        if default_position and allowed and default_position not in allowed:
+            default_position = ""
+        if not default_position and allowed:
+            default_position = allowed[0]
+        return {
+            "allowed_positions": allowed,
+            "default_position": default_position,
+            "explicit": has_explicit_allowed_positions,
+        }
+
+    @classmethod
+    def _candidate_logo_anchors(
+        cls,
+        *,
+        content: ContentVersion,
+        explainability: dict,
+        preferred_hint: str | None,
+    ) -> list[tuple[str, str]]:
+        policy = cls._brand_logo_placement_policy_from_payloads(content, explainability)
+        default_position = cls._normalize_logo_position_option(policy.get("default_position"))
+        preferred_position = cls._normalize_logo_position_option(preferred_hint)
+        allowed_positions = [
+            cls._normalize_logo_position_option(position)
+            for position in (policy.get("allowed_positions") or [])
+        ]
+        allowed_positions = [position for position in allowed_positions if position]
+        if allowed_positions:
+            ordered_positions = [
+                position
+                for position in (preferred_position, default_position, *allowed_positions)
+                if position and position in allowed_positions
+            ]
+        else:
+            ordered_positions = [
+                preferred_position,
+                default_position,
+                "top-right",
+                "top-left",
+                "bottom-right",
+                "bottom-left",
+                "top-center",
+                "bottom-center",
+                "center",
+            ]
+        anchors: list[tuple[str, str]] = []
+        for position in ordered_positions:
+            anchor = cls._logo_anchor_from_position(position)
+            if anchor and anchor not in anchors:
+                anchors.append(anchor)
+        return anchors or [("top", "right")]
+
     @staticmethod
     def _logo_anchor_from_box(
         box: tuple[int, int, int, int],
@@ -7312,20 +7673,37 @@ class ContentService:
     ) -> tuple[int, int]:
         normalized_format = str(format_name or "").strip().lower()
         if normalized_format == "carousel":
-            width = max(int(canvas_width * 0.24), 200)
-            height = max(int(canvas_height * 0.1), 72)
+            width = max(int(canvas_width * 0.2), 170)
+            height = max(int(canvas_height * 0.085), 60)
         elif normalized_format == "infographic":
-            width = max(int(canvas_width * 0.22), 190)
-            height = max(int(canvas_height * 0.095), 68)
+            width = max(int(canvas_width * 0.19), 160)
+            height = max(int(canvas_height * 0.08), 56)
         else:
             aspect_ratio = canvas_width / max(canvas_height, 1)
             if aspect_ratio >= 1.3:
-                width = max(int(canvas_width * 0.18), 180)
-                height = max(int(canvas_height * 0.09), 60)
+                width = max(int(canvas_width * 0.15), 150)
+                height = max(int(canvas_height * 0.075), 50)
             else:
-                width = max(int(canvas_width * 0.19), 180)
-                height = max(int(canvas_height * 0.085), 60)
+                width = max(int(canvas_width * 0.17), 160)
+                height = max(int(canvas_height * 0.075), 50)
         return (min(width, canvas_width), min(height, canvas_height))
+
+    @classmethod
+    def _cap_logo_box_to_profile(
+        cls,
+        *,
+        box: tuple[int, int, int, int],
+        canvas_width: int,
+        canvas_height: int,
+        format_name: str,
+    ) -> tuple[int, int, int, int]:
+        x, y, width, height = box
+        preferred_width, preferred_height = cls._logo_box_profile_for_format(
+            canvas_width=canvas_width,
+            canvas_height=canvas_height,
+            format_name=format_name,
+        )
+        return (x, y, min(width, preferred_width), min(height, preferred_height))
 
     @classmethod
     def _default_ai_logo_box(
@@ -7337,20 +7715,18 @@ class ContentService:
         anchor: tuple[str, str] | None,
         reference_box: tuple[int, int, int, int] | None = None,
     ) -> tuple[int, int, int, int]:
-        margin_x = max(int(canvas_width * 0.04), 24)
-        margin_y = max(int(canvas_height * 0.04), 24)
+        vertical, horizontal = anchor or ("top", "right")
+        margin_x = min(20, max(canvas_width - 1, 0))
+        margin_y = min(20, max(canvas_height - 1, 0))
         width, height = cls._logo_box_profile_for_format(
             canvas_width=canvas_width,
             canvas_height=canvas_height,
             format_name=format_name,
         )
         if reference_box is not None:
-            ref_x, ref_y, ref_width, ref_height = reference_box
-            width = max(width, ref_width)
-            height = max(height, ref_height)
-            margin_x = max(min(ref_x, max(int(canvas_width * 0.08), 48)), 16)
-            margin_y = max(min(ref_y, max(int(canvas_height * 0.08), 64)), 16)
-        vertical, horizontal = anchor or ("top", "right")
+            _ref_x, _ref_y, ref_width, ref_height = reference_box
+            width = max(min(width, ref_width), int(width * 0.75))
+            height = max(min(height, ref_height), int(height * 0.75))
         if horizontal == "left":
             x = margin_x
         elif horizontal == "center":
@@ -7366,6 +7742,415 @@ class ContentService:
         width = min(width, max(canvas_width - x, 1))
         height = min(height, max(canvas_height - y, 1))
         return (x, y, width, height)
+
+    @staticmethod
+    def _snap_logo_box_to_anchor_edge(
+        *,
+        box: tuple[int, int, int, int],
+        canvas_width: int,
+        canvas_height: int,
+        anchor: tuple[str, str],
+    ) -> tuple[int, int, int, int]:
+        x, y, width, height = box
+        vertical, horizontal = anchor
+        if horizontal == "left":
+            x = min(20, max(canvas_width - width, 0))
+        elif horizontal == "right":
+            x = max(canvas_width - width - 20, 0)
+        elif horizontal == "center":
+            x = max((canvas_width - width) // 2, 0)
+        if vertical == "top":
+            y = min(20, max(canvas_height - height, 0))
+        elif vertical == "bottom":
+            y = max(canvas_height - height - 20, 0)
+        elif vertical == "middle":
+            y = max((canvas_height - height) // 2, 0)
+        width = min(width, max(canvas_width - x, 1))
+        height = min(height, max(canvas_height - y, 1))
+        return (int(x), int(y), int(width), int(height))
+
+    @staticmethod
+    def _logo_offset_in_box(
+        *,
+        box: tuple[int, int, int, int],
+        logo_width: int,
+        logo_height: int,
+        anchor: str,
+    ) -> tuple[int, int]:
+        x, y, width, height = box
+        normalized_anchor = str(anchor or "").strip().lower()
+        if "left" in normalized_anchor:
+            offset_x = x
+        elif "right" in normalized_anchor:
+            offset_x = x + max(width - logo_width, 0)
+        else:
+            offset_x = x + max((width - logo_width) // 2, 0)
+        if "top" in normalized_anchor:
+            offset_y = y
+        elif "bottom" in normalized_anchor:
+            offset_y = y + max(height - logo_height, 0)
+        else:
+            offset_y = y + max((height - logo_height) // 2, 0)
+        return (int(offset_x), int(offset_y))
+
+    @staticmethod
+    def _rect_overlap_area(
+        first: tuple[int, int, int, int],
+        second: tuple[int, int, int, int],
+    ) -> int:
+        left = max(first[0], second[0])
+        top = max(first[1], second[1])
+        right = min(first[0] + first[2], second[0] + second[2])
+        bottom = min(first[1] + first[3], second[1] + second[3])
+        if right <= left or bottom <= top:
+            return 0
+        return (right - left) * (bottom - top)
+
+    @staticmethod
+    def _expanded_box_with_padding(
+        *,
+        box: tuple[int, int, int, int],
+        canvas_width: int,
+        canvas_height: int,
+        pad_x: int,
+        pad_y: int,
+    ) -> tuple[int, int, int, int]:
+        x, y, width, height = box
+        left = max(x - pad_x, 0)
+        top = max(y - pad_y, 0)
+        right = min(x + width + pad_x, canvas_width)
+        bottom = min(y + height + pad_y, canvas_height)
+        return (left, top, max(right - left, 1), max(bottom - top, 1))
+
+    @staticmethod
+    def _logo_collision_padding(
+        *,
+        logo_width: int,
+        logo_height: int,
+        canvas_width: int,
+        canvas_height: int,
+    ) -> tuple[int, int]:
+        pad_x = max(int(logo_width * 0.08), int(canvas_width * 0.006), 4)
+        pad_y = max(int(logo_height * 0.08), int(canvas_height * 0.002), 2)
+        return (pad_x, pad_y)
+
+    @classmethod
+    def _coerce_layout_obstruction_box(
+        cls,
+        candidate: dict,
+        *,
+        canvas_width: int,
+        canvas_height: int,
+    ) -> tuple[int, int, int, int] | None:
+        geometry = candidate.get("geometry") if isinstance(candidate.get("geometry"), dict) else candidate
+        units = str(geometry.get("units") or candidate.get("units") or "").strip().lower()
+        if "w" in geometry and "width" not in geometry:
+            geometry = {**geometry, "width": geometry.get("w")}
+        if "h" in geometry and "height" not in geometry:
+            geometry = {**geometry, "height": geometry.get("h")}
+        return cls._coerce_ai_logo_box(
+            geometry,
+            canvas_width=canvas_width,
+            canvas_height=canvas_height,
+            units=units,
+        )
+
+    @classmethod
+    def _logo_layout_obstruction_boxes(
+        cls,
+        *,
+        content: ContentVersion,
+        explainability: dict,
+        canvas_width: int,
+        canvas_height: int,
+    ) -> list[dict[str, object]]:
+        boxes: list[dict[str, object]] = []
+        scene_graph = explainability.get("scene_graph") if isinstance(explainability, dict) else {}
+        for element in (scene_graph.get("elements") or []) if isinstance(scene_graph, dict) else []:
+            if not isinstance(element, dict):
+                continue
+            role = str(element.get("role") or element.get("element_type") or "").strip().lower()
+            if role == "logo" or not role:
+                continue
+            box = cls._coerce_layout_obstruction_box(
+                element,
+                canvas_width=canvas_width,
+                canvas_height=canvas_height,
+            )
+            if box:
+                boxes.append({"box": box, "role": role, "source": "scene_graph"})
+        blueprint = content.blueprint_payload if isinstance(content.blueprint_payload, dict) else {}
+        for zone in blueprint.get("zones") or []:
+            if not isinstance(zone, dict):
+                continue
+            role = str(zone.get("role") or zone.get("zone_id") or zone.get("id") or "").strip().lower()
+            if "logo" in role or not role:
+                continue
+            box = cls._coerce_layout_obstruction_box(
+                zone,
+                canvas_width=canvas_width,
+                canvas_height=canvas_height,
+            )
+            if box:
+                boxes.append({"box": box, "role": role, "source": "blueprint"})
+        footer_text = cls._ai_final_render_legal_footer_text(
+            content=content,
+            explainability=explainability,
+        )
+        if footer_text:
+            strip_height = max(int(canvas_height * 0.052), 56)
+            boxes.append(
+                {
+                    "box": (0, max(canvas_height - strip_height, 0), canvas_width, strip_height),
+                    "role": "legal_footer",
+                    "source": "footer_fallback",
+                }
+            )
+        return boxes
+
+    @classmethod
+    def _layout_overlap_score(
+        cls,
+        *,
+        safe_box: tuple[int, int, int, int],
+        obstruction_boxes: list[dict[str, object]],
+    ) -> float:
+        safe_area = max(safe_box[2] * safe_box[3], 1)
+        role_weights = {
+            "headline": 5.0,
+            "title": 5.0,
+            "section_label": 4.0,
+            "supporting_line": 3.0,
+            "body": 3.0,
+            "proof_points": 3.0,
+            "stat_highlights": 3.0,
+            "cta": 2.5,
+            "image": 2.0,
+            "hero_visual": 2.0,
+            "content_card": 2.0,
+            "footer": 8.0,
+            "legal": 8.0,
+            "legal_footer": 8.0,
+            "disclaimer": 8.0,
+            "background": 0.1,
+        }
+        score = 0.0
+        for item in obstruction_boxes:
+            box = item.get("box")
+            if not isinstance(box, tuple):
+                continue
+            overlap = cls._rect_overlap_area(safe_box, box)
+            if overlap <= 0:
+                continue
+            role = str(item.get("role") or "").strip().lower()
+            score += (overlap / safe_area) * role_weights.get(role, 2.0)
+        return score
+
+    @staticmethod
+    def _image_region_obstruction_score(
+        image: Image.Image,
+        safe_box: tuple[int, int, int, int],
+    ) -> float:
+        x, y, width, height = safe_box
+        crop = image.crop((x, y, min(x + width, image.width), min(y + height, image.height))).convert("RGB")
+        if crop.width <= 0 or crop.height <= 0:
+            return 0.0
+        sample = crop.resize((max(min(crop.width, 32), 1), max(min(crop.height, 32), 1)), Image.Resampling.BILINEAR)
+        pixels = list(sample.getdata())
+        if not pixels:
+            return 0.0
+        luminances = [(0.2126 * red) + (0.7152 * green) + (0.0722 * blue) for red, green, blue in pixels]
+        avg_luminance = sum(luminances) / len(luminances)
+        variance = sum((value - avg_luminance) ** 2 for value in luminances) / len(luminances)
+        non_quiet = 0
+        row_counts = [0 for _ in range(sample.height)]
+        column_counts = [0 for _ in range(sample.width)]
+        for index, (red, green, blue) in enumerate(pixels):
+            chroma = max(red, green, blue) - min(red, green, blue)
+            luminance = (0.2126 * red) + (0.7152 * green) + (0.0722 * blue)
+            if luminance < 238 or chroma > 28:
+                non_quiet += 1
+                row_counts[index // sample.width] += 1
+                column_counts[index % sample.width] += 1
+        non_quiet_ratio = non_quiet / len(pixels)
+        max_row_ratio = max(row_counts, default=0) / max(sample.width, 1)
+        max_column_ratio = max(column_counts, default=0) / max(sample.height, 1)
+        block_contact_score = 0.0
+        if max_row_ratio >= 0.55 or max_column_ratio >= 0.55:
+            block_contact_score += 6.0
+        elif max_row_ratio >= 0.35 or max_column_ratio >= 0.35:
+            block_contact_score += 3.0
+        if non_quiet_ratio >= 0.15:
+            block_contact_score += 2.0
+        elif non_quiet_ratio >= 0.05:
+            block_contact_score += 0.8
+        return (
+            block_contact_score
+            + (non_quiet_ratio * 4.0)
+            + (max_row_ratio * 2.0)
+            + (max_column_ratio * 1.2)
+            + (min(variance ** 0.5, 128.0) / 128.0)
+        )
+
+    @staticmethod
+    def _logo_scale_candidates() -> list[float]:
+        return [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.45, 0.4, 0.35, 0.3]
+
+    @classmethod
+    def _resolve_logo_collision_guard(
+        cls,
+        *,
+        base_image: Image.Image,
+        logo_image: Image.Image,
+        logo_box: tuple[int, int, int, int],
+        content: ContentVersion,
+        explainability: dict,
+        format_name: str,
+        preferred_hint: str | None,
+    ) -> dict[str, object]:
+        canvas_width, canvas_height = base_image.size
+        initial_anchor = cls._logo_anchor_from_box(
+            logo_box,
+            canvas_width=canvas_width,
+            canvas_height=canvas_height,
+        )
+        anchors = cls._candidate_logo_anchors(
+            content=content,
+            explainability=explainability,
+            preferred_hint=preferred_hint or cls._logo_anchor_to_position(initial_anchor),
+        )
+        policy = cls._brand_logo_placement_policy_from_payloads(content, explainability)
+        allowed_anchor_keys = {
+            anchor
+            for position in (policy.get("allowed_positions") or [])
+            if (anchor := cls._logo_anchor_from_position(str(position)))
+        }
+        if allowed_anchor_keys and policy.get("explicit"):
+            for position in (
+                "top-right",
+                "top-left",
+                "bottom-right",
+                "bottom-left",
+                "top-center",
+                "bottom-center",
+                "center",
+            ):
+                anchor = cls._logo_anchor_from_position(position)
+                if anchor and anchor not in anchors:
+                    anchors.append(anchor)
+        preferred_anchor = anchors[0] if anchors else initial_anchor
+        obstruction_boxes = cls._logo_layout_obstruction_boxes(
+            content=content,
+            explainability=explainability,
+            canvas_width=canvas_width,
+            canvas_height=canvas_height,
+        )
+        _initial_x, _initial_y, initial_width, initial_height = logo_box
+        min_width = max(int(canvas_width * 0.055), 56)
+        min_height = max(int(canvas_height * 0.014), 18)
+        best: dict[str, object] | None = None
+        for anchor in anchors:
+            for scale in cls._logo_scale_candidates():
+                candidate_width = max(int(round(initial_width * scale)), min_width)
+                candidate_height = max(int(round(initial_height * scale)), min_height)
+                candidate_box = cls._snap_logo_box_to_anchor_edge(
+                    box=(0, 0, candidate_width, candidate_height),
+                    canvas_width=canvas_width,
+                    canvas_height=canvas_height,
+                    anchor=anchor,
+                )
+                inner_width = max(candidate_box[2] - max(int(candidate_box[2] * 0.01), 2), 1)
+                inner_height = max(candidate_box[3] - max(int(candidate_box[3] * 0.015), 2), 1)
+                contained = ImageOps.contain(
+                    logo_image,
+                    (inner_width, inner_height),
+                    method=Image.Resampling.LANCZOS,
+                )
+                anchor_label = cls._logo_anchor_to_position(anchor)
+                offset_x, offset_y = cls._logo_offset_in_box(
+                    box=candidate_box,
+                    logo_width=contained.width,
+                    logo_height=contained.height,
+                    anchor=anchor_label,
+                )
+                footprint = (offset_x, offset_y, contained.width, contained.height)
+                pad_x, pad_y = cls._logo_collision_padding(
+                    logo_width=contained.width,
+                    logo_height=contained.height,
+                    canvas_width=canvas_width,
+                    canvas_height=canvas_height,
+                )
+                safe_box = cls._expanded_box_with_padding(
+                    box=footprint,
+                    canvas_width=canvas_width,
+                    canvas_height=canvas_height,
+                    pad_x=pad_x,
+                    pad_y=pad_y,
+                )
+                layout_score = cls._layout_overlap_score(
+                    safe_box=safe_box,
+                    obstruction_boxes=obstruction_boxes,
+                )
+                image_score = cls._image_region_obstruction_score(base_image, safe_box)
+                preference_penalty = 0.0 if anchor == preferred_anchor else 0.35
+                size_penalty = (1.0 - scale) * 0.5
+                policy_override = bool(
+                    allowed_anchor_keys
+                    and policy.get("explicit")
+                    and anchor not in allowed_anchor_keys
+                )
+                policy_penalty = 8.0 if policy_override else 0.0
+                score = (
+                    (layout_score * 8.0)
+                    + (image_score * 4.0)
+                    + preference_penalty
+                    + size_penalty
+                    + policy_penalty
+                )
+                candidate = {
+                    "score": score,
+                    "layout_score": layout_score,
+                    "image_score": image_score,
+                    "scale": scale,
+                    "anchor": anchor_label,
+                    "policy_override": policy_override,
+                    "box": candidate_box,
+                    "footprint": footprint,
+                    "safe_box": safe_box,
+                    "contained": contained,
+                    "offset_x": offset_x,
+                    "offset_y": offset_y,
+                }
+                if best is None or score < float(best["score"]):
+                    best = candidate
+        if best is None:
+            contained = ImageOps.contain(
+                logo_image,
+                (max(logo_box[2], 1), max(logo_box[3], 1)),
+                method=Image.Resampling.LANCZOS,
+            )
+            anchor_label = cls._logo_anchor_to_position(initial_anchor)
+            offset_x, offset_y = cls._logo_offset_in_box(
+                box=logo_box,
+                logo_width=contained.width,
+                logo_height=contained.height,
+                anchor=anchor_label,
+            )
+            best = {
+                "score": 0.0,
+                "layout_score": 0.0,
+                "image_score": 0.0,
+                "scale": 1.0,
+                "anchor": anchor_label,
+                "policy_override": False,
+                "box": logo_box,
+                "footprint": (offset_x, offset_y, contained.width, contained.height),
+                "safe_box": (offset_x, offset_y, contained.width, contained.height),
+                "contained": contained,
+                "offset_x": offset_x,
+                "offset_y": offset_y,
+            }
+        return best
 
     @classmethod
     def _reference_ai_logo_box(
@@ -7562,7 +8347,18 @@ class ContentService:
                     anchor=anchor,
                     reference_box=reference_box,
                 )
-        return box
+        box = cls._cap_logo_box_to_profile(
+            box=box,
+            canvas_width=canvas_width,
+            canvas_height=canvas_height,
+            format_name=format_name,
+        )
+        return cls._snap_logo_box_to_anchor_edge(
+            box=box,
+            canvas_width=canvas_width,
+            canvas_height=canvas_height,
+            anchor=anchor,
+        )
 
     @classmethod
     def _resolve_ai_logo_box(
@@ -8686,7 +9482,10 @@ class ContentService:
             resolved_logo_asset_path = logo_asset_path
         try:
             with open_image_asset(self.storage.absolute_path(resolved_logo_asset_path)) as raw_logo:
-                raw_logo_rgba = raw_logo.convert("RGBA")
+                raw_logo_rgba = self._resize_logo_source_for_overlay(
+                    raw_logo,
+                    target_box=logo_box,
+                )
                 # Strip the logo background first, then decide whether clearance is needed.
                 # Checking the RAW logo was wrong: even if the raw file had a solid white
                 # background, _strip_logo_background_if_safe removes it, leaving a
@@ -8697,9 +9496,9 @@ class ContentService:
                     self._strip_logo_background_if_safe(raw_logo_rgba)
                 )
                 # Determine if the logo is effectively transparent AFTER stripping.
-                logo_pixels = list(logo.getdata())
-                total_pixels = len(logo_pixels)
-                transparent_pixels = sum(1 for p in logo_pixels if p[3] < 30)
+                alpha_histogram = logo.getchannel("A").histogram()
+                total_pixels = max(logo.width * logo.height, 1)
+                transparent_pixels = sum(alpha_histogram[:30])
                 logo_is_transparent_after_strip = total_pixels > 0 and (transparent_pixels / total_pixels) >= 0.25
         except OSError:
             logger.warning(
@@ -8709,21 +9508,28 @@ class ContentService:
                 resolved_logo_asset_path,
             )
             return None
-
-        x, y, width, height = logo_box
-        inner_width = max(width - max(int(width * 0.01), 2), 1)
-        inner_height = max(height - max(int(height * 0.015), 2), 1)
-        contained = ImageOps.contain(logo, (inner_width, inner_height), method=Image.Resampling.LANCZOS)
-        offset_x = x + max((width - contained.width) // 2, 0)
-        offset_y = y + max((height - contained.height) // 2, 0)
+        collision_guard = self._resolve_logo_collision_guard(
+            base_image=base,
+            logo_image=logo,
+            logo_box=logo_box,
+            content=content,
+            explainability=explainability,
+            format_name=str((studio_panel or {}).get("format") or ""),
+            preferred_hint=self._extract_logo_position_hint(content, explainability),
+        )
+        logo_box = collision_guard["box"]  # type: ignore[assignment]
+        contained = collision_guard["contained"]  # type: ignore[assignment]
+        offset_x = int(collision_guard["offset_x"])
+        offset_y = int(collision_guard["offset_y"])
+        logo_clearance_anchor = str(collision_guard["anchor"])
         # Clear the full reserved logo zone first. The image model can paint a
         # larger ghost wordmark around the real logo footprint; clearing only the
         # transparent-logo pixels leaves that fake mark visible after exact overlay.
         base, logo_zone_clearance_applied = self._clear_ai_logo_overlay_region(
             base,
             logo_box,
-            format_name=str(studio_panel.get("format") or ""),
-        )
+            format_name=str((studio_panel or {}).get("format") or ""),
+        )                            
         compact_clearance_box = self._logo_footprint_clearance_box(
             image=base,
             offset_x=offset_x,
@@ -8770,6 +9576,27 @@ class ContentService:
                 "logo_clearance_zone_applied": logo_clearance_zone_applied,
                 "logo_clearance_anchor": logo_clearance_anchor,
                 "logo_clearance_strategy": "footprint_masked_top_band_patch" if logo_clearance_anchor.startswith("top-") else "footprint_masked_context_patch_or_fill",
+                "logo_collision_guard": {
+                    "applied": True,
+                    "score": round(float(collision_guard.get("score", 0.0)), 4),
+                    "layout_score": round(float(collision_guard.get("layout_score", 0.0)), 4),
+                    "image_score": round(float(collision_guard.get("image_score", 0.0)), 4),
+                    "scale": collision_guard.get("scale"),
+                    "anchor": collision_guard.get("anchor"),
+                    "policy_override": bool(collision_guard.get("policy_override")),
+                    "footprint": {
+                        "x": int((collision_guard.get("footprint") or (0, 0, 0, 0))[0]),
+                        "y": int((collision_guard.get("footprint") or (0, 0, 0, 0))[1]),
+                        "width": int((collision_guard.get("footprint") or (0, 0, 0, 0))[2]),
+                        "height": int((collision_guard.get("footprint") or (0, 0, 0, 0))[3]),
+                    },
+                    "safe_box": {
+                        "x": int((collision_guard.get("safe_box") or (0, 0, 0, 0))[0]),
+                        "y": int((collision_guard.get("safe_box") or (0, 0, 0, 0))[1]),
+                        "width": int((collision_guard.get("safe_box") or (0, 0, 0, 0))[2]),
+                        "height": int((collision_guard.get("safe_box") or (0, 0, 0, 0))[3]),
+                    },
+                },
                 "logo_clearance_box": {
                     "x": compact_clearance_box[0],
                     "y": compact_clearance_box[1],
@@ -8966,6 +9793,170 @@ class ContentService:
             logo_selection=logo_selection,
         )
         brand_usage_writer(trace_id, brand_usage_report)
+
+    def _write_visual_generation_readable_trace(
+        self,
+        *,
+        trace_id: str | None,
+        tenant_id: UUID,
+        brand_space_id: UUID,
+        effective_prompt: str,
+        payload: ContentGenerateRequest,
+        effective_generate_image: bool,
+        context_sections: list[Any],
+        runtime_brand_context: dict[str, Any],
+        persona: Any,
+        objective: Any,
+        reference_assets: list[dict[str, Any]],
+        template_recommendations: list[Any],
+        template_context: dict[str, Any],
+        retrieved_knowledge: dict[str, list[dict[str, Any]]],
+        planning_hints: dict[str, Any],
+        logo_candidates: list[dict[str, Any]],
+        logo_selection: dict[str, Any] | None,
+        content_version: ContentVersion,
+    ) -> None:
+        readable_bundle_builder = getattr(self.trace, "build_visual_generation_readable_bundle", None)
+        readable_bundle_writer = getattr(self.trace, "write_visual_generation_readable_bundle", None)
+        if not (callable(readable_bundle_builder) and callable(readable_bundle_writer) and trace_id):
+            return
+        studio_panel = payload.studio_panel.model_dump()
+        format_name = str(studio_panel.get("format") or "").strip().lower()
+        if not effective_generate_image or format_name not in {"static", "infographic", "carousel"}:
+            return
+        explainability = (
+            content_version.explainability_metadata
+            if isinstance(content_version.explainability_metadata, dict)
+            else {}
+        )
+        request_payload = {
+            "prompt": payload.prompt,
+            "raw_user_prompt": payload.raw_user_prompt,
+            "rewrite_instruction": payload.rewrite_instruction,
+            "persona_id": str(payload.persona_id) if payload.persona_id else None,
+            "objective_id": str(payload.objective_id) if payload.objective_id else None,
+            "template_id": str(payload.template_id) if payload.template_id else None,
+            "request_mode": payload.request_mode,
+            "source_content_version_id": str(payload.source_content_version_id) if payload.source_content_version_id else None,
+            "reference_asset_ids": [str(item) for item in payload.reference_asset_ids],
+            "generate_image": effective_generate_image,
+            "inheritance_policy": payload.inheritance_policy.model_dump(mode="json"),
+        }
+        section_payloads = {
+            str(getattr(section, "section_code", "")).strip(): dict(getattr(section, "payload", {}) or {})
+            for section in context_sections
+            if str(getattr(section, "section_code", "")).strip() and isinstance(getattr(section, "payload", None), dict)
+        }
+        readable_bundle = readable_bundle_builder(
+            trace_id=trace_id,
+            prompt=effective_prompt,
+            tenant_id=tenant_id,
+            brand_space_id=brand_space_id,
+            studio_panel=studio_panel,
+            request_payload=request_payload,
+            section_payloads=section_payloads,
+            runtime_brand_context=runtime_brand_context,
+            persona_context=BrandIntelligenceService.persona_to_dict(persona),
+            objective_context=BrandIntelligenceService.objective_to_dict(objective),
+            reference_assets=reference_assets,
+            template_candidates=[
+                recommendation.model_dump(mode="json") if hasattr(recommendation, "model_dump") else dict(recommendation)
+                for recommendation in template_recommendations
+            ],
+            template_context=template_context,
+            retrieved_knowledge=retrieved_knowledge,
+            planning_hints=planning_hints,
+            logo_candidates=logo_candidates,
+            logo_selection=logo_selection,
+            generated_payload=content_version.generated_payload if isinstance(content_version.generated_payload, dict) else {},
+            blueprint_payload=content_version.blueprint_payload if isinstance(content_version.blueprint_payload, dict) else {},
+            explainability=explainability,
+        )
+        readable_bundle_writer(trace_id, readable_bundle)
+
+    def _write_brand_scoring_output(
+        self,
+        *,
+        trace_id: str | None,
+        prompt: str,
+        studio_panel: dict[str, Any],
+        brand_context: dict[str, Any],
+        persona_context: dict[str, Any],
+        objective_context: dict[str, Any],
+        content_version: ContentVersion,
+        output_assets: list[dict[str, Any]],
+        reference_assets: list[dict[str, Any]] | None = None,
+    ) -> None:
+        if not output_assets:
+            return
+        explainability = (
+            content_version.explainability_metadata
+            if isinstance(content_version.explainability_metadata, dict)
+            else {}
+        )
+        try:
+            scorecard = self.brand_scoring.build_scorecard(
+                prompt=prompt,
+                studio_panel=studio_panel,
+                generated_payload=content_version.generated_payload if isinstance(content_version.generated_payload, dict) else {},
+                brand_context=brand_context,
+                persona_context=persona_context,
+                objective_context=objective_context,
+                explainability=explainability,
+                output_assets=output_assets,
+                reference_assets=reference_assets,
+            )
+            output_id = str(content_version.id or trace_id or uuid4())
+            storage_path = self.brand_scoring.save_scorecard(
+                tenant_id=content_version.tenant_id,
+                brand_space_id=content_version.brand_space_id,
+                output_id=output_id,
+                scorecard=scorecard,
+            )
+            content_version.explainability_metadata = {
+                **explainability,
+                "brand_scoring": {
+                    **scorecard,
+                    "storage_path": storage_path,
+                },
+            }
+            self.trace.write_payload(
+                trace_id,
+                "brand_scoring",
+                {
+                    "storage_path": storage_path,
+                    "scorecard": scorecard,
+                },
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "content.brand_scoring.failed trace_id=%s content_version_id=%s",
+                trace_id,
+                getattr(content_version, "id", None),
+            )
+
+    @staticmethod
+    def _scoring_assets_from_explainability(explainability: dict[str, Any]) -> list[dict[str, Any]]:
+        assets = explainability.get("final_render_assets") if isinstance(explainability.get("final_render_assets"), list) else []
+        normalized: list[dict[str, Any]] = []
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            storage_path = str(asset.get("storage_path") or "").strip()
+            mime_type = str(asset.get("mime_type") or "").strip()
+            if not storage_path or not mime_type:
+                continue
+            normalized.append(
+                {
+                    "asset_id": str(asset.get("asset_id") or uuid4()),
+                    "mime_type": mime_type,
+                    "storage_path": storage_path,
+                    "asset_role": str(asset.get("asset_role") or "render_preview"),
+                    "metadata": asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {},
+                    "asset_kind": "image",
+                }
+            )
+        return normalized
 
     async def generate(
         self,
@@ -9444,15 +10435,15 @@ class ContentService:
             created_by=user_id,
             lifecycle_state=ContentLifecycle.GENERATED,
             content_type="content",
-            title=response.text.headline,
-            prompt=effective_prompt,
+            title=str(self._strip_null_bytes(response.text.headline) or ""),
+            prompt=str(self._strip_null_bytes(effective_prompt) or ""),
             selected_persona_id=persona.id if persona else None,
             selected_template_id=template.id if template else None,
             objective_id=objective.id if objective else None,
-            studio_panel=payload.studio_panel.model_dump(),
-            generated_payload=response.text.model_dump(),
-            blueprint_payload=response.blueprint.model_dump(),
-            explainability_metadata={
+            studio_panel=self._strip_null_bytes(payload.studio_panel.model_dump()),
+            generated_payload=self._strip_null_bytes(response.text.model_dump()),
+            blueprint_payload=self._strip_null_bytes(response.blueprint.model_dump()),
+            explainability_metadata=self._strip_null_bytes({
                 **response.explainability,
                 "knowledge_state": knowledge_state,
                 "live_research": live_research,
@@ -9480,9 +10471,9 @@ class ContentService:
                 "prompt_lineage": prompt_lineage,
                 "generation_trace_id": trace_id,
                 "artifact_state": artifact_state,
-            },
+            }),
             tone_score=response.tone_analysis["score"],
-            tone_feedback=response.tone_analysis,
+            tone_feedback=self._strip_null_bytes(response.tone_analysis),
         )
         await self.contents.add(content_version)
 
@@ -9545,6 +10536,29 @@ class ContentService:
                 )
             )
 
+        score_output_assets = [
+            {
+                "asset_id": str(asset.asset_id),
+                "mime_type": asset.mime_type,
+                "storage_path": asset.storage_path,
+                "asset_role": asset.asset_role,
+                "metadata": asset.metadata or {},
+                "asset_kind": "image",
+            }
+            for asset in (persisted_final_render_assets or response.image_assets)
+        ]
+        self._write_brand_scoring_output(
+            trace_id=trace_id,
+            prompt=effective_prompt,
+            studio_panel=payload.studio_panel.model_dump(),
+            brand_context=runtime_brand_context,
+            persona_context=BrandIntelligenceService.persona_to_dict(persona),
+            objective_context=BrandIntelligenceService.objective_to_dict(objective),
+            content_version=content_version,
+            output_assets=score_output_assets,
+            reference_assets=reference_assets,
+        )
+
         await self._record_session_context(session, payload, content_version)
         await self.usage.increment(tenant_id, UsageMetricCode.CONTENT_GENERATIONS)
         if response.image_assets:
@@ -9580,6 +10594,35 @@ class ContentService:
             template=template,
             logo_candidates=logo_candidates,
             logo_selection=logo_selection,
+        )
+        self._write_visual_generation_readable_trace(
+            trace_id=trace_id,
+            tenant_id=tenant_id,
+            brand_space_id=brand_space_id,
+            effective_prompt=effective_prompt,
+            payload=payload,
+            effective_generate_image=effective_generate_image,
+            context_sections=context["sections"],
+            runtime_brand_context=runtime_brand_context,
+            persona=persona,
+            objective=objective,
+            reference_assets=reference_assets,
+            template_recommendations=template_recommendations,
+            template_context=template_context,
+            retrieved_knowledge=retrieved_knowledge,
+            planning_hints=planning_hints,
+            logo_candidates=logo_candidates,
+            logo_selection=logo_selection,
+            content_version=content_version,)
+#         await self._run_ragas_evaluation_after_generation(
+#             content_version=content_version,
+#         )
+        await self._enqueue_ragas_evaluation_after_generation(
+            trace_id,
+            tenant_id=tenant_id,
+            brand_space_id=brand_space_id,
+            content_version_id=content_version.id,
+            generated_image_count=len(persisted_final_render_assets) or len(response.image_assets),
         )
         return content_version
 
@@ -9859,17 +10902,17 @@ class ContentService:
             created_by=user_id,
             lifecycle_state=ContentLifecycle.EDITED,
             content_type=str(getattr(original, "content_type", "content") or "content"),
-            title=str(repaired_payload.get("headline") or getattr(original, "title", "") or "").strip(),
-            prompt=payload.rewrite_instruction,
+            title=str(self._strip_null_bytes(repaired_payload.get("headline") or getattr(original, "title", "") or "")).strip(),
+            prompt=str(self._strip_null_bytes(payload.rewrite_instruction) or ""),
             selected_persona_id=original.selected_persona_id,
             selected_template_id=original.selected_template_id,
             objective_id=original.objective_id,
-            studio_panel=studio_panel,
-            generated_payload=repaired_payload,
-            blueprint_payload=rewritten_blueprint,
-            explainability_metadata=rewritten_explainability,
+            studio_panel=self._strip_null_bytes(studio_panel),
+            generated_payload=self._strip_null_bytes(repaired_payload),
+            blueprint_payload=self._strip_null_bytes(rewritten_blueprint),
+            explainability_metadata=self._strip_null_bytes(rewritten_explainability),
             tone_score=int(initial_tone_feedback.get("score") or getattr(original, "tone_score", 0) or 0),
-            tone_feedback=initial_tone_feedback,
+            tone_feedback=self._strip_null_bytes(initial_tone_feedback),
         )
         await self.contents.add(rewritten)
         if session:
@@ -9890,6 +10933,18 @@ class ContentService:
             tenant_id=tenant_id,
             brand_space_id=brand_space_id,
             content=rewritten,
+        )
+        self._write_brand_scoring_output(
+            trace_id=str(rewritten.explainability_metadata.get("generation_trace_id") or "").strip() or None,
+            prompt=payload.rewrite_instruction,
+            studio_panel=studio_panel,
+            brand_context=resolved_brand_context,
+            persona_context=persona_context,
+            objective_context=objective_context,
+            content_version=rewritten,
+            output_assets=self._scoring_assets_from_explainability(
+                rewritten.explainability_metadata if isinstance(rewritten.explainability_metadata, dict) else {}
+            ),
         )
         await self.usage.increment(tenant_id, UsageMetricCode.CONTENT_GENERATIONS)
         await self.session.commit()

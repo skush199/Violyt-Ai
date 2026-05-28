@@ -20,6 +20,21 @@ export const useUpdateTenantAdmin = () => {
   });
 };
 
+export const useDeleteTenantAdmin = () => {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (id: string) =>
+      request(API.TENANTS.DELETE, {
+        pathParams: id,
+      }),
+    onSuccess: async (_, id) => {
+      queryClient.removeQueries({ queryKey: ["tenant", id] });
+      await queryClient.invalidateQueries({ queryKey: ["tenants"] });
+    },
+  });
+};
+
 export const useUploadTenantLogo = () => {
   const queryClient = useQueryClient();
 

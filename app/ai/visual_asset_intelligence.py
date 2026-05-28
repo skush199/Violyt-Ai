@@ -260,7 +260,8 @@ class VisualAssetIntelligenceService:
         # Add data point guidance if available
         data_points = visual_requirements.get("data_points", [])
         if data_points:
-            guidance += f" Visualize these specific data points: {', '.join([f'{dp.get('year')}: {dp.get('value')}' for dp in data_points[:5]])}."
+            data_point_labels = [f"{dp.get('year')}: {dp.get('value')}" for dp in data_points[:5]]
+            guidance += f" Visualize these specific data points: {', '.join(data_point_labels)}."
 
         return guidance
 

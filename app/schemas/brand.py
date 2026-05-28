@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from app.schemas.common import APIModel
 
@@ -87,10 +87,74 @@ class ObjectivePayload(APIModel):
     configuration: dict[str, Any] = Field(default_factory=dict)
 
 
+LOGO_PLACEMENT_OPTIONS = {
+    "top-right",
+    "top-left",
+    "bottom-right",
+    "bottom-left",
+    "top-center",
+    "bottom-center",
+    "center",
+}
+
+
+def normalize_logo_placement_option(value: Any) -> str:
+    raw_value = str(value or "").strip().lower()
+    if not raw_value:
+        return ""
+    normalized = raw_value.replace("_", "-").replace(" ", "-")
+    if normalized in LOGO_PLACEMENT_OPTIONS:
+        return normalized
+
+    tokens = raw_value.replace("_", " ").replace("-", " ").split()
+    token_set = set(tokens)
+    has_top = "top" in token_set or "upper" in token_set
+    has_bottom = "bottom" in token_set or "lower" in token_set
+    has_left = "left" in token_set
+    has_right = "right" in token_set
+    has_center = "center" in token_set or "middle" in token_set or "centre" in token_set
+
+    if has_center and not (has_top or has_bottom or has_left or has_right):
+        return "center"
+    vertical = "top" if has_top else "bottom" if has_bottom else ""
+    horizontal = "left" if has_left else "right" if has_right else "center" if has_center else ""
+    if vertical and horizontal:
+        candidate = f"{vertical}-{horizontal}"
+        return candidate if candidate in LOGO_PLACEMENT_OPTIONS else ""
+    return ""
+
+
+class LogoPlacementPayload(APIModel):
+    allowed_positions: list[Any] = Field(default_factory=list)
+    default_position: Any = ""
+
+    @model_validator(mode="after")
+    def normalize_policy(self) -> "LogoPlacementPayload":
+        allowed_positions: list[str] = []
+        for raw_position in self.allowed_positions:
+            normalized = normalize_logo_placement_option(raw_position)
+            if not normalized:
+                raise ValueError(f"Invalid logo placement position: {raw_position!r}")
+            if normalized not in allowed_positions:
+                allowed_positions.append(normalized)
+
+        default_position = normalize_logo_placement_option(self.default_position)
+        if default_position and not allowed_positions:
+            allowed_positions.append(default_position)
+        if allowed_positions and not default_position:
+            default_position = allowed_positions[0]
+        if default_position and default_position not in allowed_positions:
+            raise ValueError("Default logo position must be one of the allowed logo positions.")
+
+        self.allowed_positions = allowed_positions
+        self.default_position = default_position
+        return self
+
+
 class VisualIdentityPayload(APIModel):
     brand_mood: str | None = None
     visual_style: str | None = None
-    logo_placement: dict[str, Any] = Field(default_factory=dict)
+    logo_placement: LogoPlacementPayload = Field(default_factory=LogoPlacementPayload)
     brand_color_palette: dict[str, str] = Field(default_factory=dict)
     typography: dict[str, Any] = Field(default_factory=dict)
     reference_creative_asset_ids: list[UUID] = Field(default_factory=list)
@@ -108,6 +172,17 @@ class BrandSectionUpsertRequest(APIModel):
     section_code: str
     payload: dict[str, Any]
     completion_percent: int = Field(default=100, ge=0, le=100)
+
+    @model_validator(mode="after")
+    def normalize_section_payload(self) -> "BrandSectionUpsertRequest":
+        if self.section_code != "visual_identity":
+            return self
+        payload = dict(self.payload or {})
+        payload["logo_placement"] = LogoPlacementPayload.model_validate(
+            payload.get("logo_placement") or {}
+        ).model_dump()
+        self.payload = payload
+        return self
 
 
 class BrandCreateRequest(APIModel):

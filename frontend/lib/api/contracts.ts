@@ -487,6 +487,18 @@ export interface ChatMessageResponse {
   created_at: string;
 }
 
+export interface BrandScoringPayload {
+  overall_score: number;
+  score_breakdown: {
+    on_brand: number;
+    prompt_adherence: number;
+    relevance: number;
+  };
+  weighting?: Record<string, number>;
+  summary?: string[];
+  developer_explanation?: Record<string, unknown>;
+}
+
 export interface ChatAssistantStructuredPayload {
   content_version_id?: UUID;
   generated_payload?: StructuredTextPayload;
@@ -500,6 +512,7 @@ export interface ChatAssistantStructuredPayload {
   image_generation_requested?: boolean;
   image_generation_status?: string;
   image_asset_count?: number;
+  brand_scoring?: BrandScoringPayload;
 }
 
 export interface ChatSendResponse {

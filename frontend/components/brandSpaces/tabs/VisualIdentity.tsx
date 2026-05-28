@@ -9,40 +9,68 @@ import {
   StyledSelect,
   StyledInput,
 } from "./FormFields";
+import {
+  isLogoPlacementOption,
+  LOGO_PLACEMENT_OPTIONS,
+  normalizeLogoPlacementPolicy,
+} from "@/lib/logo-placement";
 import { createBrandUploadItem, updateBrandFormSection, type BrandTabProps } from "@/types/brand-space.types";
 
 const DOCUMENT_UPLOAD_FORMATS = "PDF, DOC, DOCX, PPT, PPTX, TXT, MD, CSV, JSON, PNG, JPG, JPEG, WEBP";
-const LOGO_PLACEMENT_OPTIONS = [
-  "top-right",
-  "top-left",
-  "bottom-right",
-  "bottom-left",
-  "top-center",
-  "bottom-center",
-  "center",
-] as const;
 
 const VisualIdentity = ({ form, setForm, onRemoveUpload, onFontGuideUploadAdded }: BrandTabProps) => {
+  const logoPlacementPolicy = normalizeLogoPlacementPolicy(
+    form.visualIdentity.allowedLogoPlacements,
+    form.visualIdentity.defaultLogoPlacement,
+  );
+
   const updateField = <TKey extends keyof typeof form.visualIdentity>(
     key: TKey,
     value: (typeof form.visualIdentity)[TKey],
   ) => updateBrandFormSection(setForm, "visualIdentity", key, value);
 
   const toggleLogoPlacement = (placement: string) => {
+    if (!isLogoPlacementOption(placement)) {
+      return;
+    }
     setForm((current) => {
-      const currentPlacements = current.visualIdentity.allowedLogoPlacements;
-      const nextPlacements = currentPlacements.includes(placement)
-        ? currentPlacements.filter((item) => item !== placement)
-        : [...currentPlacements, placement];
-      const nextDefault = nextPlacements.includes(current.visualIdentity.defaultLogoPlacement)
-        ? current.visualIdentity.defaultLogoPlacement
-        : nextPlacements[0] || "";
+      const currentPolicy = normalizeLogoPlacementPolicy(
+        current.visualIdentity.allowedLogoPlacements,
+        current.visualIdentity.defaultLogoPlacement,
+      );
+      const nextPlacements = currentPolicy.allowedLogoPlacements.includes(placement)
+        ? currentPolicy.allowedLogoPlacements.filter((item) => item !== placement)
+        : [...currentPolicy.allowedLogoPlacements, placement];
+      const nextPolicy = normalizeLogoPlacementPolicy(nextPlacements, currentPolicy.defaultLogoPlacement);
       return {
         ...current,
         visualIdentity: {
           ...current.visualIdentity,
-          allowedLogoPlacements: nextPlacements,
-          defaultLogoPlacement: nextDefault,
+          allowedLogoPlacements: nextPolicy.allowedLogoPlacements,
+          defaultLogoPlacement: nextPolicy.defaultLogoPlacement,
+        },
+      };
+    });
+  };
+
+  const updateDefaultLogoPlacement = (value: string) => {
+    if (!isLogoPlacementOption(value)) {
+      return;
+    }
+    setForm((current) => {
+      const currentPolicy = normalizeLogoPlacementPolicy(
+        current.visualIdentity.allowedLogoPlacements,
+        current.visualIdentity.defaultLogoPlacement,
+      );
+      if (!currentPolicy.allowedLogoPlacements.includes(value)) {
+        return current;
+      }
+      return {
+        ...current,
+        visualIdentity: {
+          ...current.visualIdentity,
+          allowedLogoPlacements: currentPolicy.allowedLogoPlacements,
+          defaultLogoPlacement: value,
         },
       };
     });
@@ -88,7 +116,7 @@ const VisualIdentity = ({ form, setForm, onRemoveUpload, onFontGuideUploadAdded 
             <FormField label="Allowed logo positions">
               <CheckboxList
                 options={[...LOGO_PLACEMENT_OPTIONS]}
-                values={form.visualIdentity.allowedLogoPlacements}
+                values={logoPlacementPolicy.allowedLogoPlacements}
                 onToggle={toggleLogoPlacement}
               />
             </FormField>
@@ -97,10 +125,15 @@ const VisualIdentity = ({ form, setForm, onRemoveUpload, onFontGuideUploadAdded 
               hint="Used as the preferred anchor when the chosen layout has more than one allowed option."
             >
               <StyledSelect
-                value={form.visualIdentity.defaultLogoPlacement}
-                onValueChange={(value) => updateField("defaultLogoPlacement", value)}
-                placeholder="Select default logo position"
-                options={form.visualIdentity.allowedLogoPlacements.length ? form.visualIdentity.allowedLogoPlacements : [...LOGO_PLACEMENT_OPTIONS]}
+                value={logoPlacementPolicy.defaultLogoPlacement}
+                onValueChange={updateDefaultLogoPlacement}
+                placeholder={
+                  logoPlacementPolicy.allowedLogoPlacements.length
+                    ? "Select default logo position"
+                    : "Select an allowed position first"
+                }
+                options={logoPlacementPolicy.allowedLogoPlacements}
+                disabled={!logoPlacementPolicy.allowedLogoPlacements.length}
               />
             </FormField>
           </FormSubsection>

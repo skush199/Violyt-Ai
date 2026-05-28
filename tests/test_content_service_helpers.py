@@ -3437,10 +3437,297 @@ def test_resolve_ai_logo_box_prefers_top_right_hint_and_minimum_size() -> None:
         asset=asset,
     )
 
-    assert box[0] >= 780
+    assert box[0] >= 840
     assert box[1] <= 60
-    assert box[2] >= 220
+    assert box[2] >= 200
     assert box[3] >= 90
+
+
+def test_default_ai_logo_box_hugs_requested_frame_edge() -> None:
+    box = ContentService._default_ai_logo_box(
+        canvas_width=1080,
+        canvas_height=1080,
+        format_name="static",
+        anchor=("bottom", "right"),
+    )
+
+    assert box[0] + box[2] == 1060
+    assert box[1] + box[3] == 1060
+
+
+def test_logo_offset_in_box_aligns_logo_to_anchor_edge() -> None:
+    offset = ContentService._logo_offset_in_box(
+        box=(800, 900, 200, 100),
+        logo_width=120,
+        logo_height=40,
+        anchor="bottom-right",
+    )
+
+    assert offset == (880, 960)
+
+
+def test_trim_transparent_logo_margins_crops_opaque_logo_canvas_to_visible_mark() -> None:
+    logo = Image.new("RGBA", (1536, 1024), (250, 250, 250, 255))
+    draw = ImageDraw.Draw(logo)
+    draw.rectangle((292, 324, 420, 615), fill=(247, 153, 0, 255))
+    draw.rectangle((460, 324, 1292, 615), fill=(0, 57, 117, 255))
+
+    trimmed = ContentService._trim_transparent_logo_margins(logo)
+
+    assert trimmed.size == (1001, 292)
+    assert trimmed.getchannel("A").getbbox() == (0, 0, 1001, 292)
+
+
+def test_logo_collision_guard_shrinks_top_logo_above_title_band() -> None:
+    base = Image.new("RGBA", (1024, 1536), (255, 255, 255, 255))
+    draw = ImageDraw.Draw(base)
+    draw.rectangle((76, 61, 924, 258), fill=(0, 57, 117, 255))
+    logo = Image.new("RGBA", (1001, 292), (0, 0, 0, 0))
+    ImageDraw.Draw(logo).rectangle((0, 0, 1000, 291), fill=(0, 57, 117, 255))
+    content = ContentVersion(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        session_id=uuid4(),
+        created_by=uuid4(),
+        prompt="Create a static post",
+        studio_panel={"format": "static", "platform_preset": "instagram", "file_type": "png"},
+        generated_payload={"metadata": {"logo_position": "top-right"}},
+        blueprint_payload={},
+        explainability_metadata={},
+    )
+    initial_box = ContentService._default_ai_logo_box(
+        canvas_width=1024,
+        canvas_height=1536,
+        format_name="static",
+        anchor=("top", "right"),
+    )
+
+    result = ContentService._resolve_logo_collision_guard(
+        base_image=base,
+        logo_image=logo,
+        logo_box=initial_box,
+        content=content,
+        explainability={
+            "scene_graph": {
+                "elements": [
+                    {
+                        "role": "headline",
+                        "geometry": {"x": 76, "y": 61, "width": 848, "height": 197, "units": "px"},
+                    }
+                ]
+            }
+        },
+        format_name="static",
+        preferred_hint="top-right",
+    )
+
+    safe_box = result["safe_box"]
+    footprint = result["footprint"]
+    assert result["anchor"] == "top-right"
+    assert result["scale"] < 1.0
+    assert footprint[1] + footprint[3] <= 61
+    assert safe_box[1] + safe_box[3] <= 61
+
+
+def test_logo_collision_guard_can_switch_to_clear_allowed_position() -> None:
+    base = Image.new("RGBA", (1024, 1024), (255, 255, 255, 255))
+    draw = ImageDraw.Draw(base)
+    draw.rectangle((830, 20, 1004, 120), fill=(0, 57, 117, 255))
+    logo = Image.new("RGBA", (1001, 292), (0, 0, 0, 0))
+    ImageDraw.Draw(logo).rectangle((0, 0, 1000, 291), fill=(0, 57, 117, 255))
+    content = ContentVersion(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        session_id=uuid4(),
+        created_by=uuid4(),
+        prompt="Create a static post",
+        studio_panel={"format": "static", "platform_preset": "instagram", "file_type": "png"},
+        generated_payload={"metadata": {"logo_position": "top-right"}},
+        blueprint_payload={},
+        explainability_metadata={},
+    )
+    initial_box = ContentService._default_ai_logo_box(
+        canvas_width=1024,
+        canvas_height=1024,
+        format_name="static",
+        anchor=("top", "right"),
+    )
+
+    result = ContentService._resolve_logo_collision_guard(
+        base_image=base,
+        logo_image=logo,
+        logo_box=initial_box,
+        content=content,
+        explainability={},
+        format_name="static",
+        preferred_hint="top-right",
+    )
+
+    assert result["anchor"] != "top-right"
+    assert result["image_score"] < 0.1
+
+
+def test_logo_collision_guard_avoids_near_top_title_bar_contact() -> None:
+    base = Image.new("RGBA", (1024, 1024), (255, 255, 255, 255))
+    draw = ImageDraw.Draw(base)
+    title_bar = (50, 42, 923, 192)
+    draw.rectangle(
+        (title_bar[0], title_bar[1], title_bar[0] + title_bar[2], title_bar[1] + title_bar[3]),
+        fill=(0, 57, 117, 255),
+    )
+    logo = Image.new("RGBA", (1001, 292), (0, 0, 0, 0))
+    ImageDraw.Draw(logo).rectangle((0, 0, 1000, 291), fill=(0, 57, 117, 255))
+    content = ContentVersion(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        session_id=uuid4(),
+        created_by=uuid4(),
+        prompt="Create a static post",
+        studio_panel={"format": "static", "platform_preset": "instagram", "file_type": "png"},
+        generated_payload={"metadata": {"logo_position": "top-right"}},
+        blueprint_payload={},
+        explainability_metadata={},
+    )
+    initial_box = ContentService._default_ai_logo_box(
+        canvas_width=1024,
+        canvas_height=1024,
+        format_name="static",
+        anchor=("top", "right"),
+    )
+
+    result = ContentService._resolve_logo_collision_guard(
+        base_image=base,
+        logo_image=logo,
+        logo_box=initial_box,
+        content=content,
+        explainability={},
+        format_name="static",
+        preferred_hint="top-right",
+    )
+
+    assert ContentService._rect_overlap_area(result["safe_box"], title_bar) == 0
+
+
+def test_logo_collision_guard_can_override_allowed_position_for_hard_collision() -> None:
+    base = Image.new("RGBA", (1024, 1024), (255, 255, 255, 255))
+    draw = ImageDraw.Draw(base)
+    draw.rectangle((760, 0, 1024, 160), fill=(0, 57, 117, 255))
+    logo = Image.new("RGBA", (1001, 292), (0, 0, 0, 0))
+    ImageDraw.Draw(logo).rectangle((0, 0, 1000, 291), fill=(0, 57, 117, 255))
+    content = ContentVersion(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        session_id=uuid4(),
+        created_by=uuid4(),
+        prompt="Create a static post",
+        studio_panel={"format": "static", "platform_preset": "instagram", "file_type": "png"},
+        generated_payload={"metadata": {"logo_position": "top-right"}},
+        blueprint_payload={},
+        explainability_metadata={
+            "brand_context_snapshot": {
+                "visual_identity": {
+                    "logo_placement": {
+                        "allowed_positions": ["top-right"],
+                        "default_position": "top-right",
+                    }
+                }
+            }
+        },
+    )
+    initial_box = ContentService._default_ai_logo_box(
+        canvas_width=1024,
+        canvas_height=1024,
+        format_name="static",
+        anchor=("top", "right"),
+    )
+
+    result = ContentService._resolve_logo_collision_guard(
+        base_image=base,
+        logo_image=logo,
+        logo_box=initial_box,
+        content=content,
+        explainability=content.explainability_metadata,
+        format_name="static",
+        preferred_hint="top-right",
+    )
+
+    assert result["policy_override"] is True
+    assert result["anchor"] != "top-right"
+    assert result["image_score"] < 0.1
+
+
+def test_logo_collision_guard_reserves_legal_footer_band() -> None:
+    base = Image.new("RGBA", (1024, 1024), (255, 255, 255, 255))
+    draw = ImageDraw.Draw(base)
+    title_bar = (50, 42, 923, 192)
+    footer_band = (0, 968, 1024, 56)
+    draw.rectangle(
+        (title_bar[0], title_bar[1], title_bar[0] + title_bar[2], title_bar[1] + title_bar[3]),
+        fill=(0, 57, 117, 255),
+    )
+    logo = Image.new("RGBA", (1001, 292), (0, 0, 0, 0))
+    ImageDraw.Draw(logo).rectangle((0, 0, 1000, 291), fill=(0, 57, 117, 255))
+    content = ContentVersion(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        session_id=uuid4(),
+        created_by=uuid4(),
+        prompt="Create a static post",
+        studio_panel={"format": "static", "platform_preset": "instagram", "file_type": "png"},
+        generated_payload={
+            "metadata": {
+                "logo_position": "top-right",
+                "footer": "Investments are subject to risk. Read offer documents carefully.",
+            }
+        },
+        blueprint_payload={},
+        explainability_metadata={},
+    )
+    initial_box = ContentService._default_ai_logo_box(
+        canvas_width=1024,
+        canvas_height=1024,
+        format_name="static",
+        anchor=("top", "right"),
+    )
+
+    result = ContentService._resolve_logo_collision_guard(
+        base_image=base,
+        logo_image=logo,
+        logo_box=initial_box,
+        content=content,
+        explainability={},
+        format_name="static",
+        preferred_hint="top-right",
+    )
+
+    assert ContentService._rect_overlap_area(result["safe_box"], title_bar) == 0
+    assert ContentService._rect_overlap_area(result["safe_box"], footer_band) == 0
+
+
+def test_normalize_ai_logo_box_snaps_viable_template_box_to_20px_edge() -> None:
+    content = ContentVersion(
+        tenant_id=uuid4(),
+        brand_space_id=uuid4(),
+        session_id=uuid4(),
+        created_by=uuid4(),
+        prompt="Create a static post",
+        studio_panel={"format": "static", "platform_preset": "instagram", "file_type": "png"},
+        generated_payload={"metadata": {"logo_position": "top-left"}},
+        blueprint_payload={},
+        explainability_metadata={},
+    )
+
+    box = ContentService._normalize_ai_logo_box(
+        box=(80, 90, 220, 92),
+        canvas_width=1024,
+        canvas_height=1536,
+        format_name="static",
+        hint="top-left",
+        content=content,
+        explainability={},
+    )
+
+    assert box == (20, 20, 174, 92)
 
 
 def test_resolve_ai_logo_box_uses_reference_creative_logo_ratio_for_top_right() -> None:
@@ -3632,10 +3919,10 @@ def test_resolve_ai_logo_box_uses_blueprint_logo_zone_id_when_role_is_missing() 
         asset=asset,
     )
 
-    assert box[0] == 760
-    assert box[1] == 48
-    assert box[2] == 260
-    assert box[3] == 100
+    assert box[0] == 800
+    assert box[1] == 20
+    assert box[2] == 216
+    assert box[3] == 91
 
 
 def test_resolve_ai_logo_box_uses_synthesized_blueprint_logo_zone_when_it_is_viable() -> None:
@@ -3683,7 +3970,7 @@ def test_resolve_ai_logo_box_uses_synthesized_blueprint_logo_zone_when_it_is_via
         asset=asset,
     )
 
-    assert box == (80, 80, 160, 60)
+    assert box == (20, 20, 160, 60)
 
 
 def test_resolve_ai_logo_box_prefers_finalized_scene_graph_logo_over_stale_blueprint_zone() -> None:

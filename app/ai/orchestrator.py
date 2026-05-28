@@ -2327,28 +2327,46 @@ class AIOrchestratorService:
         visual_identity = (
             brand_context.get("visual_identity", {}) if isinstance(brand_context, dict) else {}
         ) or {}
-        placement = visual_identity.get("logo_placement") if isinstance(visual_identity.get("logo_placement"), dict) else {}
+        placement = (
+            visual_identity.get("logo_placement")
+            if isinstance(visual_identity.get("logo_placement"), dict)
+            else {}
+        )
         allowed_positions: list[str] = []
         for raw_value in placement.get("allowed_positions") or placement.get("positions") or []:
             normalized = cls._normalize_logo_position_option(raw_value)
             if normalized and normalized not in allowed_positions:
                 allowed_positions.append(normalized)
+        has_explicit_allowed_positions = bool(allowed_positions)
         default_position = cls._normalize_logo_position_option(
-            placement.get("default_position") or placement.get("preferred_position") or placement.get("logo_position")
+            placement.get("default_position")
+            or placement.get("preferred_position")
+            or placement.get("logo_position")
         )
         promoted_position = cls._normalize_logo_position_option(
             visual_identity.get("logo_position")
-            or ((visual_identity.get("design_system") or {}) if isinstance(visual_identity.get("design_system"), dict) else {}).get("logo_anchor")
+            or (
+                (visual_identity.get("design_system") or {})
+                if isinstance(visual_identity.get("design_system"), dict)
+                else {}
+            ).get("logo_anchor")
         )
-        if promoted_position and promoted_position not in allowed_positions:
-            allowed_positions.append(promoted_position)
-        if not default_position:
-            default_position = promoted_position
-        if default_position and default_position not in allowed_positions:
-            allowed_positions.append(default_position)
+        if has_explicit_allowed_positions:
+            if default_position and default_position not in allowed_positions:
+                default_position = ""
+        else:
+            default_position = default_position or promoted_position
+        if not default_position and allowed_positions:
+            default_position = allowed_positions[0]
+        if allowed_positions and default_position and default_position not in allowed_positions:
+            default_position = allowed_positions[0] if allowed_positions else ""
         return {
             "allowed_positions": allowed_positions,
-            "default_position": default_position if default_position in allowed_positions else (allowed_positions[0] if allowed_positions else ""),
+            "default_position": (
+                default_position
+                if (not allowed_positions or default_position in allowed_positions)
+                else (allowed_positions[0] if allowed_positions else "")
+            ),
         }
 
     @classmethod
@@ -2399,6 +2417,10 @@ class AIOrchestratorService:
                 return normalized
         if default_position:
             return default_position
+        if not allowed_positions:
+            for candidate in cls._logo_position_priority_for_request(request, creative_decision):
+                if candidate:
+                    return candidate
         for candidate in cls._logo_position_priority_for_request(request, creative_decision):
             if candidate in allowed_positions:
                 return candidate
@@ -2418,15 +2440,17 @@ class AIOrchestratorService:
     ) -> tuple[float, float, float, float]:
         width, height = cls._logo_box_profile_for_panel(request.studio_panel)
         reference_geometry = cls._reference_logo_safe_zone_geometry(request=request, anchor=anchor)
-        margin_x = 0.04
-        margin_y = 0.04
-        if reference_geometry is not None:
-            ref_x, ref_y, ref_width, ref_height = reference_geometry
-            width = max(width, ref_width)
-            height = max(height, ref_height)
-            margin_x = max(min(ref_x, 0.08), 0.02)
-            margin_y = max(min(ref_y, 0.08), 0.02)
         vertical, horizontal = anchor or ("top", "right")
+        size = (request.studio_panel or {}).get("size")
+        size = size if isinstance(size, dict) else {}
+        canvas_width = max(int(size.get("width") or 1080), 1)
+        canvas_height = max(int(size.get("height") or 1080), 1)
+        if reference_geometry is not None:
+            _ref_x, _ref_y, ref_width, ref_height = reference_geometry
+            width = max(min(width, ref_width), width * 0.75)
+            height = max(min(height, ref_height), height * 0.75)
+        margin_x = min(20 / canvas_width, max(1.0 - width, 0.0))
+        margin_y = min(20 / canvas_height, max(1.0 - height, 0.0))
         if horizontal == "left":
             x = margin_x
         elif horizontal == "center":
@@ -2441,6 +2465,47 @@ class AIOrchestratorService:
             y = margin_y
         return (x, y, width, height)
 
+    @classmethod
+    def _snap_logo_safe_zone_geometry_to_anchor_edge(
+        cls,
+        *,
+        request: AIOrchestrationRequest,
+        geometry: tuple[float, float, float, float],
+        anchor: tuple[str, str],
+    ) -> tuple[float, float, float, float]:
+        x, y, width, height = geometry
+        size = (request.studio_panel or {}).get("size")
+        size = size if isinstance(size, dict) else {}
+        canvas_width = max(int(size.get("width") or 1080), 1)
+        canvas_height = max(int(size.get("height") or 1080), 1)
+        margin_x = min(20 / canvas_width, max(1.0 - width, 0.0))
+        margin_y = min(20 / canvas_height, max(1.0 - height, 0.0))
+        vertical, horizontal = anchor
+        if horizontal == "left":
+            x = margin_x
+        elif horizontal == "right":
+            x = max(1.0 - width - margin_x, 0.0)
+        elif horizontal == "center":
+            x = max((1.0 - width) / 2.0, 0.0)
+        if vertical == "top":
+            y = margin_y
+        elif vertical == "bottom":
+            y = max(1.0 - height - margin_y, 0.0)
+        elif vertical == "middle":
+            y = max((1.0 - height) / 2.0, 0.0)
+        return (x, y, width, height)
+
+    @classmethod
+    def _cap_logo_safe_zone_geometry_to_profile(
+        cls,
+        *,
+        request: AIOrchestrationRequest,
+        geometry: tuple[float, float, float, float],
+    ) -> tuple[float, float, float, float]:
+        x, y, width, height = geometry
+        preferred_width, preferred_height = cls._logo_box_profile_for_panel(request.studio_panel)
+        return (x, y, min(width, preferred_width), min(height, preferred_height))
+
     @staticmethod
     def _logo_box_profile_for_panel(studio_panel: dict[str, Any] | None) -> tuple[float, float]:
         panel = studio_panel or {}
@@ -2450,12 +2515,12 @@ class AIOrchestratorService:
         height_px = max(int(size.get("height") or 1080), 1)
         aspect_ratio = width_px / max(height_px, 1)
         if format_name == "carousel":
-            return (0.24, 0.1)
+            return (0.2, 0.085)
         if format_name == "infographic":
-            return (0.22, 0.095)
+            return (0.19, 0.08)
         if aspect_ratio >= 1.3:
-            return (0.18, 0.09)
-        return (0.19, 0.085)
+            return (0.15, 0.075)
+        return (0.17, 0.075)
 
     @classmethod
     def _reference_logo_safe_zone_geometry(
@@ -2639,12 +2704,20 @@ class AIOrchestratorService:
         if anchor_mismatch or too_small:
             return cls._default_logo_safe_zone_geometry(request, anchor=hint_anchor or current_anchor)
         if reference_geometry is not None:
-            ref_x, ref_y, ref_width, ref_height = reference_geometry
+            _ref_x, _ref_y, ref_width, ref_height = reference_geometry
             width_gap = abs(width - ref_width)
             height_gap = abs(height - ref_height)
             if width_gap >= 0.035 or height_gap >= 0.025:
                 return cls._default_logo_safe_zone_geometry(request, anchor=hint_anchor or current_anchor)
-        return geometry
+        geometry = cls._cap_logo_safe_zone_geometry_to_profile(
+            request=request,
+            geometry=geometry,
+        )
+        return cls._snap_logo_safe_zone_geometry_to_anchor_edge(
+            request=request,
+            geometry=geometry,
+            anchor=hint_anchor or current_anchor,
+        )
 
     @classmethod
     def _logo_safe_zone_guidance(
