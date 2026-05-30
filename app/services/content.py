@@ -9356,9 +9356,11 @@ class ContentService:
             return None
 
         width, height = base.size
-        strip_height = max(int(height * 0.052), 56)
-        strip_top = max(height - strip_height, 0)
-        sample_y = min(max(strip_top + strip_height // 2, 0), height - 1)
+        text_strip_height = max(int(height * 0.052), 56)
+        text_strip_top = max(height - text_strip_height, 0)
+        clear_strip_height = max(text_strip_height, int(height * 0.085))
+        clear_strip_top = max(height - clear_strip_height, 0)
+        sample_y = min(max(text_strip_top + text_strip_height // 2, 0), height - 1)
         sample_points = [base.getpixel((x, sample_y))[:3] for x in (int(width * 0.12), int(width * 0.5), int(width * 0.88))]
         avg_luma = sum((0.2126 * r + 0.7152 * g + 0.0722 * b) for r, g, b in sample_points) / max(len(sample_points), 1)
         if avg_luma >= 145:
@@ -9370,11 +9372,11 @@ class ContentService:
 
         overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
-        draw.rectangle((0, strip_top, width, height), fill=strip_fill)
+        draw.rectangle((0, clear_strip_top, width, height), fill=strip_fill)
         horizontal_padding = max(int(width * 0.04), 28)
-        vertical_padding = max(int(strip_height * 0.16), 8)
+        vertical_padding = max(int(text_strip_height * 0.16), 8)
         max_text_width = max(width - horizontal_padding * 2, 10)
-        max_text_height = max(strip_height - vertical_padding * 2, 10)
+        max_text_height = max(text_strip_height - vertical_padding * 2, 10)
 
         chosen_font = self._load_footer_font(max(int(height * 0.009), 9))
         chosen_lines = self._wrap_footer_lines(draw, footer_text, chosen_font, max_width=max_text_width)
@@ -9391,7 +9393,7 @@ class ContentService:
         spacing = max(getattr(chosen_font, "size", 9) // 3, 2)
         line_boxes = [draw.textbbox((0, 0), line, font=chosen_font) for line in chosen_lines]
         total_height = sum(box[3] - box[1] for box in line_boxes) + max(len(chosen_lines) - 1, 0) * spacing
-        cursor_y = strip_top + max((strip_height - total_height) // 2, vertical_padding // 2)
+        cursor_y = text_strip_top + max((text_strip_height - total_height) // 2, vertical_padding // 2)
         for line, box in zip(chosen_lines, line_boxes):
             line_height = box[3] - box[1]
             draw.text((horizontal_padding, cursor_y - box[1]), line, fill=text_fill, font=chosen_font)
@@ -9414,9 +9416,15 @@ class ContentService:
             "legal_footer_line_count": len(chosen_lines),
             "legal_footer_strip_box": {
                 "x": 0,
-                "y": strip_top,
+                "y": clear_strip_top,
                 "width": width,
-                "height": strip_height,
+                "height": clear_strip_height,
+            },
+            "legal_footer_text_box": {
+                "x": horizontal_padding,
+                "y": text_strip_top,
+                "width": max_text_width,
+                "height": text_strip_height,
             },
         }
         return {
@@ -9486,20 +9494,11 @@ class ContentService:
                     raw_logo,
                     target_box=logo_box,
                 )
-                # Strip the logo background first, then decide whether clearance is needed.
-                # Checking the RAW logo was wrong: even if the raw file had a solid white
-                # background, _strip_logo_background_if_safe removes it, leaving a
-                # transparent logo.  Calling clearance afterward samples dark brand colors
-                # from the surrounding base image and fills the entire zone with an opaque
-                # dark rectangle — destroying headlines and charts.
+                # Strip any removable logo background before computing the final
+                # visible footprint used for cleanup and paste.
                 logo = self._trim_transparent_logo_margins(
                     self._strip_logo_background_if_safe(raw_logo_rgba)
                 )
-                # Determine if the logo is effectively transparent AFTER stripping.
-                alpha_histogram = logo.getchannel("A").histogram()
-                total_pixels = max(logo.width * logo.height, 1)
-                transparent_pixels = sum(alpha_histogram[:30])
-                logo_is_transparent_after_strip = total_pixels > 0 and (transparent_pixels / total_pixels) >= 0.25
         except OSError:
             logger.warning(
                 "content.ai_final_render.logo_overlay_failed content_version_id=%s asset_storage_path=%s logo_storage_path=%s",
@@ -9522,14 +9521,11 @@ class ContentService:
         offset_x = int(collision_guard["offset_x"])
         offset_y = int(collision_guard["offset_y"])
         logo_clearance_anchor = str(collision_guard["anchor"])
-        # Clear the full reserved logo zone first. The image model can paint a
-        # larger ghost wordmark around the real logo footprint; clearing only the
-        # transparent-logo pixels leaves that fake mark visible after exact overlay.
-        base, logo_zone_clearance_applied = self._clear_ai_logo_overlay_region(
-            base,
-            logo_box,
-            format_name=str((studio_panel or {}).get("format") or ""),
-        )                            
+        logo_zone_clearance_applied = False
+        # The scene-graph logo box is a reserved layout zone, not necessarily
+        # the visible logo footprint. Cleaning that full zone can erase nearby
+        # headings when the final logo is smaller and right-aligned inside it.
+        # Keep cleanup tied to the exact footprint that will be pasted below.
         compact_clearance_box = self._logo_footprint_clearance_box(
             image=base,
             offset_x=offset_x,

@@ -674,12 +674,13 @@ class PromptIntelligenceService:
     def _logo_overlay_rule_block() -> str:
         return " ".join(
             [
-                "Treat the logo as a reserved overlay zone for the exact stored brand asset, not as generated artwork.",
+                "Treat the corner logo placement as a reserved overlay zone for the exact stored brand asset, not as generated artwork.",
                 "When a logo is needed, include a concrete logo element with corner-based geometry, style.fit=contain, and enough breathing room around it.",
                 "Use metadata.logo_position to describe the intended corner placement when it is deliberate.",
                 "Use metadata.logo_background_tone and scene_graph logo validation hints to describe whether the reserved logo surface is light, dark, or neutral.",
                 "If the reserved logo zone sits on a light surface, request dark_on_light; if it sits on a dark surface, request light_on_dark.",
-                "Keep the logo zone visually quiet, low-texture, and free of competing contrast so the exact overlaid logo and its transparent edges will read cleanly.",
+                "CRITICAL: Never include the words 'logo', 'brandmark', or 'watermark' inside metadata.image_prompt, metadata.visual_direction, or metadata.design_style as this causes the image model to hallucinate fake logos.",
+                "Keep the reserved corner visually quiet, low-texture, and free of competing contrast so the exact overlaid logo and its transparent edges will read cleanly.",
             ]
         )
 
@@ -1024,9 +1025,9 @@ class PromptIntelligenceService:
         Do not place emoji, checkmark glyphs, symbol bullets, or decorative icon characters directly inside text fields.
         Never repeat the user's imperative instruction sentence verbatim inside the headline, body, supporting line, or CTA.
         Convert request phrasing like "create an engaging Instagram post" into audience-facing campaign copy.
-        If the brand has an uploaded logo asset, include a logo element but do not redraw, restyle, or spell out the brand name as a substitute for the actual logo.
-        If the logo needs a specific variant, set creative_decision.asset_strategy.logo_variant and mirror that in the logo element asset.variant when practical.
-        Make the logo element an overlay reservation with concrete corner geometry, style.fit=contain, metadata.logo_position, and validation_hints.logo_background_tone when that tone is clear.
+        If the brand has an uploaded brand asset, include a brand_mark element but do not redraw, restyle, or spell out the brand name as a substitute for the actual brand asset.
+        If the brand mark needs a specific variant, set creative_decision.asset_strategy.brand_mark_variant and mirror that in the brand_mark element asset.variant when practical.
+        Make the brand mark element an overlay reservation with concrete corner geometry, style.fit=contain, metadata.brand_mark_position, and validation_hints.brand_mark_background_tone when that tone is clear.
         Avoid simplistic vertical icon stamp columns. If you use icons, integrate them into proof-point rows, cards, callouts, or a clearly composed visual system.
         If no validated brand fonts are provided, use generic typography roles such as heading_sans, body_sans, and cta_sans instead of inventing named font families.
         If validated brand fonts are available, only use those font families.
@@ -1039,7 +1040,7 @@ class PromptIntelligenceService:
         Use brand_visual_brief.subject_semantics_summary and any structured subject_semantics fields to choose the right scene type, subject matter, abstraction level, and finance objects.
         Use brand_visual_brief.motif_summary and brand_visual_brief.design_system motif signals only when they reinforce the topic; never force every motif into the composition.
         Use brand_visual_brief.image_treatment_summary to avoid generic portraits when the reference system implies diagrams, icon-led explainers, editorial compositions, or non-photo treatment.
-        Use brand_visual_brief.logo_position and background_style_summary to reserve the correct logo-safe region and keep that surface calm.
+        Use brand_visual_brief.brand_mark_position and background_style_summary to reserve the correct safe region and keep that surface calm.
         If template_fit_brief.template_editorial_dna, template_fit_brief.template_layout_dna, or template_fit_brief.sequence_pack are present, treat them as concrete sample-specific guidance for sequence rhythm, layout structure, and spatial pacing.
         For Instagram, LinkedIn, X, and other social creatives, do not return a sparse poster with only headline/body/cta unless the prompt explicitly asks for extreme minimalism.
         For social outputs, include a visibly structured composition with:
@@ -1340,15 +1341,18 @@ class PromptIntelligenceService:
         Preserve the user's campaign topic. If the user asks about travel, flights, booking, pricing, or another specific theme, keep that theme visible instead of replacing it with generic product copy.
         The scene_graph should normally contain:
         - background
-        - one primary image element that acts as the hero visual
+        - one primary image element that acts as the hero visual (must use valid roles like 'image' or 'hero_visual')
         - headline
         - supporting_line and/or body
         - cta
-        - logo
+        - corner_safe_zone
         - at most one restrained decorative_shape system if it helps the composition
-        The backend will overlay the real uploaded logo asset. Do not redraw, restyle, spell out, or fake the logo in text.
-        If the composition needs a specific logo variant, request it explicitly in creative_decision.asset_strategy.logo_variant and optionally mirror it in the logo element asset.variant.
-        The logo element must describe an overlay reservation, not generated artwork: use concrete corner geometry, style.fit=contain, metadata.logo_position, and validation_hints.logo_background_tone when the surface tone is obvious.
+        CRITICAL ROLE ENFORCEMENT: Even if adapting a complex multi-module sample template, you MUST ONLY use standard allowed schema roles (headline, body, image, icon, background, corner_safe_zone, cta, decorative_shape). DO NOT invent custom role names like 'slide_1_hero_image' or 'card_image'.
+        CRITICAL TEXT ENFORCEMENT: Every layout MUST contain at least one 'headline' and 'body' or 'supporting_line' element in the scene_graph elements array, even if the reference template consists mostly of images or cards.
+        The backend will overlay the real uploaded brand asset. Do not redraw, restyle, spell out, or fake the brand mark in text.
+        If the composition needs a specific brand mark variant, request it explicitly in creative_decision.asset_strategy.brand_mark_variant and optionally mirror it in the element asset.variant.
+        The corner_safe_zone element must describe an overlay reservation, not generated artwork: use concrete corner geometry, style.fit=contain, metadata.brand_mark_position, and validation_hints.brand_mark_background_tone when the surface tone is obvious.
+        CRITICAL: Never use the word 'logo', 'watermark', or 'brandmark' in metadata.image_prompt, metadata.visual_direction, or metadata.design_style, as it causes severe hallucinations. Use 'empty reserved corner' instead if you must refer to the space.
         Use templates only when they are clean and safely editable. Flattened or text-heavy templates must be treated as style references, not direct text-overlay surfaces.
         If follow-up_mode is variant_of_previous and session_brief.prior_layout_archetype is present, choose a noticeably different layout_archetype from the prior creative.
         If multiple approved uploaded images are available, choose only the strongest subset for the format instead of forcing every image into the same layout.
@@ -1365,7 +1369,7 @@ class PromptIntelligenceService:
         Use brand_visual_brief.subject_semantics_summary and any structured subject_semantics fields to choose the right scene type, subject matter, abstraction level, and finance objects.
         Use brand_visual_brief.motif_summary only when the motif naturally supports the topic.
         Use brand_visual_brief.image_treatment_summary to avoid generic business-person imagery when the brand references imply diagram-led, icon-led, editorial, or abstract treatment.
-        Use brand_visual_brief.logo_position and background_style_summary to reserve the correct logo-safe zone on a calm surface.
+        Use brand_visual_brief.brand_mark_position and background_style_summary to reserve the correct corner_safe_zone on a calm surface.
         If template_fit_brief.template_editorial_dna, template_fit_brief.template_layout_dna, or template_fit_brief.sequence_pack are present, treat them as concrete sample-specific guidance for sequence rhythm, layout structure, and spatial pacing.
         {replan_note or ""}
         creative_decision must include:
@@ -1375,7 +1379,7 @@ class PromptIntelligenceService:
         - reasoning
         - adaptations
         - asset_strategy
-        If the brand has multiple logo variants and the composition clearly needs one, asset_strategy should include logo_variant such as dark_on_light, light_on_dark, horizontal, stacked, icon_only, or wordmark.
+        If the brand has multiple brand mark variants and the composition clearly needs one, asset_strategy should include brand_mark_variant such as dark_on_light, light_on_dark, horizontal, stacked, icon_only, or wordmark.
         asset_strategy must keep one dominant visual system. For this mode, prefer generated_image as dominant_visual_system, with type_led as an optional supporting system.
         scene_graph must include:
         - canvas
@@ -1564,9 +1568,9 @@ class PromptIntelligenceService:
         Do not leave the scene graph sparse.
         Preserve the user's topical anchor while repairing. Do not swap the requested subject for a different campaign theme.
         Convert inline bullet or emoji-like text into structured proof_points or icon-supported sections when required by the validation report.
-        If the validation report requires a logo, include a visible logo element.
-        If the validation report suggests a logo mismatch, request the right logo variant using creative_decision.asset_strategy.logo_variant.
-        Repair logo reservations by using concrete corner geometry, style.fit=contain, and a quiet low-texture surface that matches validation_hints.logo_background_tone when present.
+        If the validation report requires a brand mark, include a visible corner_safe_zone element.
+        If the validation report suggests a brand mark mismatch, request the right brand mark variant using creative_decision.asset_strategy.brand_mark_variant.
+        Repair corner_safe_zone reservations by using concrete corner geometry, style.fit=contain, and a quiet low-texture surface that matches validation_hints.brand_mark_background_tone when present.
         Reduce visual-system overload: choose a clearer dominant visual strategy instead of mixing every possible asset type.
         If brand fonts are unavailable, use generic typography roles instead of inventing specific font families.
         Repair icon stamp columns by converting them into cards, proof rows, or more integrated callout structures.
@@ -1577,7 +1581,7 @@ class PromptIntelligenceService:
         If compiled_context.brand_visual_brief.design_system or its summary fields are present, use them to repair toward the brand's actual layout family, hierarchy, content structure, motif usage, image treatment, visual craft, composition logic, subject semantics, and logo placement instead of generic fallback structure.
         Use brand_visual_brief.hierarchy_summary and content_structure_summary to restore focal path and structural pacing when validation says the graph is sparse or underdesigned.
         Use brand_visual_brief.visual_craft_summary, composition_logic_summary, and subject_semantics_summary to restore premium depth, framing, and topic-specific scene selection when the graph feels generic.
-        Use brand_visual_brief.logo_position and background_style_summary to repair logo-safe reservations on the correct surface.
+        Use brand_visual_brief.brand_mark_position and background_style_summary to repair corner_safe_zone reservations on the correct surface.
         If you must adjust text-bearing elements during repair, {prompt_intelligence_rules}
         {logo_overlay_rules}
         Prompt intelligence brief: {prompt_intelligence_brief}

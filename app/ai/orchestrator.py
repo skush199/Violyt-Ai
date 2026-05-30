@@ -1701,21 +1701,22 @@ class AIOrchestratorService:
             },
         }
         if sample_page_blueprint:
+            prompt_sample_page_blueprint = cls._sample_blueprint_without_rendered_footer_text(sample_page_blueprint)
             contract["sample_page_blueprint"] = {
                 "source": "rendered_selected_sample_page",
                 "layout_category": cls._normalize_metadata_text(
-                    sample_page_blueprint.get("layout_category"),
+                    prompt_sample_page_blueprint.get("layout_category"),
                     limit=64,
                 ),
-                "density": cls._normalize_metadata_text(sample_page_blueprint.get("density"), limit=32),
-                "module_counts": sample_page_blueprint.get("module_counts")
-                if isinstance(sample_page_blueprint.get("module_counts"), dict)
+                "density": cls._normalize_metadata_text(prompt_sample_page_blueprint.get("density"), limit=32),
+                "module_counts": prompt_sample_page_blueprint.get("module_counts")
+                if isinstance(prompt_sample_page_blueprint.get("module_counts"), dict)
                 else {},
-                "visual_permissions": sample_page_blueprint.get("visual_permissions")
-                if isinstance(sample_page_blueprint.get("visual_permissions"), dict)
+                "visual_permissions": prompt_sample_page_blueprint.get("visual_permissions")
+                if isinstance(prompt_sample_page_blueprint.get("visual_permissions"), dict)
                 else {},
-                "must_match": sample_page_blueprint.get("must_match")
-                if isinstance(sample_page_blueprint.get("must_match"), list)
+                "must_match": prompt_sample_page_blueprint.get("must_match")
+                if isinstance(prompt_sample_page_blueprint.get("must_match"), list)
                 else [],
             }
         if metadata_contaminated:
@@ -1837,7 +1838,7 @@ class AIOrchestratorService:
             "layout_rules": [
                 "preserve the selected sample's page-specific layout cadence and whitespace behavior",
                 "do not let supporting topic references become layout anchors",
-                "keep headline, body, image, logo, and CTA regions separated into distinct partitions",
+                "keep headline, body, image, and CTA regions separated into distinct partitions",
                 "match text density and module count to this slide's story role and proof count",
             ],
             "content_quantity": {
@@ -1854,17 +1855,18 @@ class AIOrchestratorService:
             "scene_graph_geometry_fallback": "" if sample_page_blueprint else geometry_contract,
         }
         if sample_page_blueprint:
+            prompt_sample_page_blueprint = cls._sample_blueprint_without_rendered_footer_text(sample_page_blueprint)
             contract["rendered_sample_page_blueprint"] = {
-                "layout_category": cls._normalize_metadata_text(sample_page_blueprint.get("layout_category"), limit=64),
-                "density": cls._normalize_metadata_text(sample_page_blueprint.get("density"), limit=32),
-                "module_counts": sample_page_blueprint.get("module_counts")
-                if isinstance(sample_page_blueprint.get("module_counts"), dict)
+                "layout_category": cls._normalize_metadata_text(prompt_sample_page_blueprint.get("layout_category"), limit=64),
+                "density": cls._normalize_metadata_text(prompt_sample_page_blueprint.get("density"), limit=32),
+                "module_counts": prompt_sample_page_blueprint.get("module_counts")
+                if isinstance(prompt_sample_page_blueprint.get("module_counts"), dict)
                 else {},
-                "visual_permissions": sample_page_blueprint.get("visual_permissions")
-                if isinstance(sample_page_blueprint.get("visual_permissions"), dict)
+                "visual_permissions": prompt_sample_page_blueprint.get("visual_permissions")
+                if isinstance(prompt_sample_page_blueprint.get("visual_permissions"), dict)
                 else {},
-                "must_match": sample_page_blueprint.get("must_match")
-                if isinstance(sample_page_blueprint.get("must_match"), list)
+                "must_match": prompt_sample_page_blueprint.get("must_match")
+                if isinstance(prompt_sample_page_blueprint.get("must_match"), list)
                 else [],
             }
         return json.dumps(contract, separators=(",", ":"), ensure_ascii=True)
@@ -2429,7 +2431,7 @@ class AIOrchestratorService:
     @classmethod
     def _logo_reserved_area_label(cls, hint: str | None) -> str:
         normalized = cls._normalize_logo_position_option(hint)
-        return normalized or "reserved logo-safe"
+        return normalized or "reserved corner-safe"
 
     @classmethod
     def _default_logo_safe_zone_geometry(
@@ -2658,14 +2660,14 @@ class AIOrchestratorService:
         tone = cls._normalize_logo_background_tone(background_tone)
         if tone == "light":
             return (
-                "Keep the reserved logo zone on a calm light surface with low texture, soft gradients only, and clean edge contrast so the exact overlaid logo and its transparent edges read crisply."
+                "Keep the reserved safe zone on a calm light surface with low texture, soft gradients only, and clean edge contrast."
             )
         if tone == "dark":
             return (
-                "Keep the reserved logo zone on a calm dark surface with low texture and stable contrast so the exact overlaid logo and its transparent edges read crisply."
+                "Keep the reserved safe zone on a calm dark surface with low texture and stable contrast."
             )
         return (
-            "Keep the reserved logo zone on a smooth, visually quiet surface with stable contrast and no noisy texture, glass effects, or cutout-like detail so the exact overlaid logo and its transparent edges read cleanly."
+            "Keep the reserved safe zone on a smooth, visually quiet surface with stable contrast and no noisy texture, glass effects, or cutout-like detail."
         )
 
     @classmethod
@@ -2673,11 +2675,11 @@ class AIOrchestratorService:
         normalized_brand_name = cls._normalize_metadata_text(brand_name, limit=80)
         brand_label = normalized_brand_name or "the brand name"
         return [
-            f"Brand context only: {brand_label}. Use this for palette, tone, and approved copy context only, never as a logo, masthead, signature, watermark, standalone brand mark, or top-corner wordmark.",
-            "LOGO RULE - no exceptions: the AI base creative must contain zero logos, wordmarks, brand-name signatures, monograms, watermarks, logo-like shapes, symbol clusters, initials, mascot marks, or brand marks anywhere in the image.",
-            "Do not render, invent, stylize, trace, emboss, blur, shadow, crop, duplicate, partially duplicate, fade, ghost, hint at, or reserve a visible placeholder for any logo or wordmark. The exact stored brand logo is composited afterward as a separate asset.",
-            f"Never write or paint {brand_label} in the logo-safe corner. If approved legal/footer copy contains the brand name, it may appear only inside the legal/footer text region, never as a logo, header signature, watermark, or decorative brand lockup.",
-            f"The {reserved_logo_area} area must remain pure background reservation only: blank/quiet surface, no placeholder text, no ghosted wordmark, no orange/navy logo-like marks, no icon cluster, no badge, no plate, no chip, and no decorative detail.",
+            f"Brand context only: {brand_label}. Use this for palette, tone, and approved copy context only, never as a brand mark, masthead, signature, watermark, standalone brand mark, or top-corner wordmark.",
+            "BRAND MARK RULE - no exceptions: the AI base creative must contain zero brand marks, wordmarks, brand-name signatures, monograms, watermarks, brand-mark-like shapes, symbol clusters, initials, mascot marks, or brand marks anywhere in the image.",
+            "Do not render, invent, stylize, trace, emboss, blur, shadow, crop, duplicate, partially duplicate, fade, ghost, hint at, or reserve a visible placeholder for any brand mark or wordmark. The exact stored brand mark is composited afterward as a separate asset.",
+            f"Never write or paint {brand_label} in the corner-safe area. If approved legal/footer copy contains the brand name, it may appear only inside the legal/footer text region, never as a brand mark, header signature, watermark, or decorative brand lockup.",
+            f"The {reserved_logo_area} area must remain pure background reservation only: blank/quiet surface, no placeholder text, no ghosted wordmark, no orange/navy brand-mark-like marks, no icon cluster, no badge, no plate, no chip, and no decorative detail.",
         ]
 
     @classmethod
@@ -2760,23 +2762,23 @@ class AIOrchestratorService:
         if horizontal_anchor == "right":
             right_limit_pct = max(int(round(max(x - 0.04, 0.0) * 100)), 0)
             same_band_rule = (
-                f"Any headline or large text that begins in the same top band as this logo zone must wrap before it reaches the logo: "
-                f"keep its right edge before about {right_limit_pct}% of canvas width, and use additional lines rather than stretching under the logo."
+                f"Any headline or large text that begins in the same top band as this safe zone must wrap before it reaches the zone: "
+                f"keep its right edge before about {right_limit_pct}% of canvas width, and use additional lines rather than stretching under the zone."
             )
         elif horizontal_anchor == "left":
             left_limit_pct = min(int(round(min(x + width + 0.04, 1.0) * 100)), 100)
             same_band_rule = (
-                f"Any headline or large text that begins in the same top band as this logo zone must start after about {left_limit_pct}% of canvas width, "
-                "and use additional lines rather than stretching under the logo."
+                f"Any headline or large text that begins in the same top band as this safe zone must start after about {left_limit_pct}% of canvas width, "
+                "and use additional lines rather than stretching under the zone."
             )
         return (
-            f"Reserve a clean logo-safe zone in the {anchor_phrase} of the canvas, roughly {width_pct}% of the width and {height_pct}% of the height. "
-            f"Treat the logo-safe rectangle as starting around {left_pct}% from the left and {top_pct}% from the top; no readable text may overlap that rectangle or its immediate padding. "
-            "Leave that area visually calm and empty with no text, icons, faces, charts, decorative marks, or high-contrast detail because the exact stored logo will be placed there later. "
+            f"Reserve a clean empty safe zone in the {anchor_phrase} of the canvas, roughly {width_pct}% of the width and {height_pct}% of the height. "
+            f"Treat the safe rectangle as starting around {left_pct}% from the left and {top_pct}% from the top; no readable text may overlap that rectangle or its immediate padding. "
+            "Leave that area visually calm and completely empty with no text, icons, faces, charts, decorative marks, or high-contrast detail. "
             "Do not mark the zone with a visible badge, panel, tile, chip, colored patch, box, plate, or placeholder shape. "
-            f"No headline, body copy, supporting text, proof point, stat, CTA, or any content element may appear inside or immediately adjacent to the {anchor_phrase} logo zone — keep a clear margin around it. "
-            f"The {anchor_phrase} area must have a clean, calm, low-contrast background so the exact brand logo can sit there clearly without any content, text, or decorative element crowding it from any side. "
-            f"Keep the vertical logo-safe band clear through about {bottom_limit_pct}% of canvas height. "
+            f"No headline, body copy, supporting text, proof point, stat, CTA, or any content element may appear inside or immediately adjacent to the {anchor_phrase} safe zone — keep a clear margin around it. "
+            f"The {anchor_phrase} area must have a clean, calm, low-contrast background without any content, text, or decorative element crowding it from any side. "
+            f"Keep the vertical safe band clear through about {bottom_limit_pct}% of canvas height. "
             f"{same_band_rule}"
         )
 
@@ -4623,6 +4625,8 @@ class AIOrchestratorService:
             if (
                 not element.visible
                 or element.role == "background"
+                or str(element.role or "").strip().casefold() == "logo"
+                or str(element.element_type or "").strip().casefold() == "logo"
                 or str(element.element_type or "").strip().casefold() == "multi_slide_sequence"
             ):
                 continue
@@ -5568,7 +5572,8 @@ class AIOrchestratorService:
                 f"Reference family layout lock: {lock_strength}. Stay inside the approved family system rather than inventing a fresh layout grammar."
             )
         if preferred_zone_roles:
-            sections.append(f"Reference family zone grammar: {', '.join(preferred_zone_roles)}.")
+            sanitized_roles = [r if r != "logo" else "corner_safe_zone" for r in preferred_zone_roles]
+            sections.append(f"Reference family zone grammar: {', '.join(sanitized_roles)}.")
         if image_zone_roles:
             sections.append(
                 f"Approved image zones only: generated imagery should live inside these family roles only: {', '.join(image_zone_roles)}."
@@ -5950,8 +5955,9 @@ class AIOrchestratorService:
                 f"Sample layout DNA: {descriptor}. Preserve this composition archetype rather than reverting to a flat generic explainer layout."
             )
         if zone_roles:
+            sanitized_roles = [r if r != "logo" else "corner_safe_zone" for r in zone_roles]
             sections.append(
-                f"Preferred zone-role rhythm from the selected sample: {', '.join(zone_roles)}. Keep these role neighborhoods distinct and do not collapse the slide into one hero-plus-text poster block."
+                f"Preferred zone-role rhythm from the selected sample: {', '.join(sanitized_roles)}. Keep these role neighborhoods distinct and do not collapse the slide into one hero-plus-text poster block."
             )
         if hierarchy_summary:
             sections.append(
@@ -7034,6 +7040,32 @@ class AIOrchestratorService:
         return text.strip()
 
     @staticmethod
+    def _scrub_image_prompt_brand_mark_triggers(value: str, replacement: str = "empty space") -> str:
+        text = str(value or "")
+        safe_replacement = replacement.strip() or "empty space"
+        substitutions = (
+            (r"\bcorner[_-]safe[_-]zone[a-z0-9_]*\b", safe_replacement),
+            (r"\bcorner[_\s-]*safe[_\s-]*zone(?:s)?\b", safe_replacement),
+            (r"\blogo[_\s-]*safe\b", safe_replacement),
+            (r"\blogo[_\s-]*(?:like|style|shaped)\b", safe_replacement),
+            (r"(?<![a-zA-Z])logos?(?![a-zA-Z])", safe_replacement),
+            (r"\bwatermarks?\b", "stray text"),
+            (r"\bwatermarked\b", "marked"),
+            (r"\bwordmarks?\b", "stray text"),
+            (r"\bbrand[_\s-]*marks?\b", "standalone graphics"),
+            (r"\bbrandmarks?\b", "standalone graphics"),
+            (r"\bbrand[-\s]*name signatures?\b", "brand-name text"),
+            (r"\bmonograms?\b", "letter symbols"),
+            (r"\bemblems?\b", "symbols"),
+            (r"\blockups?\b", "symbol groups"),
+        )
+        for pattern, substitute in substitutions:
+            text = re.sub(pattern, substitute, text, flags=re.IGNORECASE)
+        text = re.sub(r"\s{2,}", " ", text)
+        text = re.sub(r"\s+([,.;:])", r"\1", text)
+        return text.strip()
+
+    @staticmethod
     def _visual_explanation_guidance(visual_plan: dict[str, Any] | None) -> str:
         plan = visual_plan if isinstance(visual_plan, dict) else {}
         mode = str(plan.get("mode") or "minimal_brand_scene").strip().lower()
@@ -7351,7 +7383,7 @@ class AIOrchestratorService:
             orientation = "portrait"
         return (
             f"Canvas fit: design for the requested {width}x{height} {orientation} output ratio. "
-            "Keep every headline, body line, proof point, CTA, logo-safe area, and visual focal subject fully inside a centered target-aspect safe frame with at least 8% inner margin. "
+            "Keep every headline, body line, proof point, CTA, corner-safe area, and visual focal subject fully inside a centered target-aspect safe frame with at least 8% inner margin. "
             "Never place CTA buttons, bullets, faces, hands, or key objects on the outer edge; if text feels tight, reduce copy density and scale down the layout instead of letting anything run below or outside the canvas."
         )
 
@@ -8271,7 +8303,7 @@ class AIOrchestratorService:
                 return "proof_points" if token != "stat_highlights" else "stat_highlights"
             if token in {"cta", "cta_button", "text_button", "button"}:
                 return "cta"
-            if token in {"logo", "logo_placeholder", "brand_logo"}:
+            if token in {"logo", "logo_placeholder", "brand_logo", "corner_safe_zone", "brand_mark", "corner_safe", "safe_zone", "empty_corner", "asset_zone", "brand_space", "reserved_zone"}:
                 return "logo"
             if token in {"background", "color_fill"}:
                 return "background"
@@ -11381,7 +11413,7 @@ class AIOrchestratorService:
         for index, comp in enumerate(large_visuals[:3], start=1):
             zones.append({"role": f"hero_visual_{index}", "x": comp["x"], "y": comp["y"], "w": comp["w"], "h": comp["h"]})
         if footer_bands:
-            zones.append({"role": "legal_footer", "x": 0.02, "y": footer_bands[0]["y"], "w": 0.96, "h": min(0.06, footer_bands[0]["h"])})
+            zones.append({"role": "empty_bottom_safe_strip", "x": 0.02, "y": footer_bands[0]["y"], "w": 0.96, "h": min(0.06, footer_bands[0]["h"])})
 
         return {
             "canvas": {"width": width, "height": height},
@@ -11626,7 +11658,7 @@ class AIOrchestratorService:
             ("large_visual_count", "large hero visual regions", 1),
             ("small_icon_like_count", "small icon-like visual marks", 3),
             ("top_text_band_count", "top text bands", 1),
-            ("footer_band_count", "footer/legal bands", 1),
+            ("footer_band_count", "empty bottom safe strips", 1),
         ]
         count_scores: list[float] = []
         for key, label, tolerance in count_specs:
@@ -11671,7 +11703,7 @@ class AIOrchestratorService:
             issues.append("ai_generated_logo_or_wordmark_detected")
             hard_retry_issues.add("ai_generated_logo_or_wordmark_detected")
             corrections.append(
-                "The exact logo is deferred to post-generation overlay, so the AI base image must contain zero logos, wordmarks, brand signatures, ghost marks, or logo-like shapes. Leave only an empty logo-safe background area."
+                "The exact asset is deferred to post-generation overlay, so the AI base image must contain zero brand marks, wordmarks, brand signatures, ghost marks, or graphic shapes. Leave only an empty safe background area."
             )
             score_parts.append(0.15)
 
@@ -11917,11 +11949,12 @@ class AIOrchestratorService:
             separators=(",", ":"),
             ensure_ascii=True,
         )
+        repair_contract = cls._scrub_image_prompt_brand_mark_triggers(repair_contract)
         remaining = max(cls.CAROUSEL_IMAGE_PROMPT_MAX_LENGTH - len(repair_contract) - 1, 1200)
-        return cls._trim_prompt(
+        return cls._scrub_image_prompt_brand_mark_triggers(cls._trim_prompt(
             f"{repair_contract} {cls._trim_prompt(prompt, remaining)}",
             cls.CAROUSEL_IMAGE_PROMPT_MAX_LENGTH,
-        )
+        ))
 
     @classmethod
     def _strip_leading_sample_similarity_repair_prompt(cls, prompt: str) -> str:
@@ -12010,6 +12043,7 @@ class AIOrchestratorService:
     def _sample_blueprint_layout_instruction(cls, blueprint: dict[str, Any]) -> str:
         if not isinstance(blueprint, dict) or not blueprint:
             return ""
+        blueprint = cls._sample_blueprint_without_rendered_footer_text(blueprint)
         mode = cls._sample_blueprint_layout_mode(blueprint)
         counts = blueprint.get("module_counts") if isinstance(blueprint.get("module_counts"), dict) else {}
         zones = blueprint.get("zones") if isinstance(blueprint.get("zones"), list) else []
@@ -12037,9 +12071,9 @@ class AIOrchestratorService:
                 normalized_role = "number_badge"
             elif "icon" in normalized_role:
                 normalized_role = "icon"
-            elif normalized_role in {"legal"}:
-                normalized_role = "footer"
-            if normalized_role not in {"headline", "body", "card", "row", "number_badge", "image", "icon", "cta", "footer", "legal_footer", "subheading"}:
+            elif "footer" in normalized_role or "legal" in normalized_role or "disclaimer" in normalized_role:
+                normalized_role = "empty_bottom_strip"
+            if normalized_role not in {"headline", "body", "card", "row", "number_badge", "image", "icon", "cta", "empty_bottom_strip", "subheading"}:
                 continue
             x = cls._similarity_float(zone.get("x"), default=0.0)
             y = cls._similarity_float(zone.get("y"), default=0.0)
@@ -12055,7 +12089,7 @@ class AIOrchestratorService:
             ("large_visual_count", "large visual regions"),
             ("small_icon_like_count", "small icon/image marks"),
             ("top_text_band_count", "top text bands"),
-            ("footer_band_count", "footer/legal bands"),
+            ("footer_band_count", "empty bottom safe strips"),
         ):
             value = int(counts.get(key) or 0)
             if value:
@@ -12082,6 +12116,52 @@ class AIOrchestratorService:
         if must_match:
             details.append("Honor sample must-match cues: " + "; ".join(must_match) + ".")
         return " ".join([base, *details, avoid]).strip()
+
+    @classmethod
+    def _sample_blueprint_without_rendered_footer_text(cls, blueprint: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(blueprint, dict) or not blueprint:
+            return {}
+        cleaned = dict(blueprint)
+
+        def footer_like(value: Any) -> bool:
+            text = cls._normalize_metadata_text(value, limit=180).casefold()
+            return any(token in text for token in ("footer", "legal", "disclaimer", "fine print"))
+
+        zones: list[dict[str, Any]] = []
+        source_zones = blueprint.get("zones") if isinstance(blueprint.get("zones"), list) else []
+        for zone in source_zones:
+            if not isinstance(zone, dict):
+                continue
+            copied = dict(zone)
+            if footer_like(copied.get("role")):
+                copied["role"] = "empty_bottom_safe_strip"
+            zones.append(copied)
+        if zones:
+            cleaned["zones"] = zones
+
+        module_counts = dict(blueprint.get("module_counts") or {}) if isinstance(blueprint.get("module_counts"), dict) else {}
+        if module_counts.get("footer_band_count"):
+            module_counts["empty_bottom_safe_strip_count"] = int(module_counts.get("footer_band_count") or 0)
+            module_counts["footer_band_count"] = 0
+        if module_counts:
+            cleaned["module_counts"] = module_counts
+
+        must_match: list[str] = []
+        added_empty_strip = False
+        source_must_match = blueprint.get("must_match") if isinstance(blueprint.get("must_match"), list) else []
+        for item in source_must_match:
+            text = cls._normalize_metadata_text(item, limit=160)
+            if not text:
+                continue
+            if footer_like(text):
+                if not added_empty_strip:
+                    must_match.append("bottom safe strip kept blank for exact post-processing text")
+                    added_empty_strip = True
+                continue
+            must_match.append(text)
+        if must_match:
+            cleaned["must_match"] = must_match
+        return cleaned
 
     @classmethod
     def _sample_adaptation_fact_lines(
@@ -12645,7 +12725,7 @@ class AIOrchestratorService:
             "weak_geometry_contract": (
                 "quality_weak_geometry_contract",
                 "The current plan does not preserve a strong enough geometry contract for premium rendering.",
-                "Return a scene graph with explicit normalized coordinates and stronger region discipline for headline, image, CTA, and logo-safe zones.",
+                "Return a scene graph with explicit normalized coordinates and stronger region discipline for headline, image, CTA, and corner-safe zones.",
             ),
             "craft_direction_weak": (
                 "quality_craft_direction_weak",
@@ -16162,7 +16242,7 @@ class AIOrchestratorService:
             "claim_evidence_pairs": fallback_claim_evidence_pairs,
             "visual_direction": f"Premium brand-safe {platform_preset} visual that explains the requested content with a clear, content-specific focal concept.",
             "design_style": "editorial brand campaign creative" if format_name != "infographic" else "structured premium infographic",
-            "image_prompt": f"Premium {brand_name} campaign visual with no text, built around the concrete idea in the user prompt.",
+            "image_prompt": "Premium brand campaign visual with no text, built around the concrete idea in the user prompt.",
         }
         fallback_text = {
             "headline": fallback_headline,
@@ -18757,11 +18837,11 @@ class AIOrchestratorService:
         ]
         if normalized_footer:
             guidance.append(
-                "Reserve a thin quiet bottom footer-safe zone for the exact legal footer that will be composited after image generation."
+                "Reserve a thin quiet bottom strip for exact post-processing compliance text."
             )
-            guidance.append("Do not render, invent, paraphrase, or approximate legal footer text inside the AI image.")
+            guidance.append("Keep that bottom strip completely blank: no words, no fine print, no disclaimer label, no pseudo-text.")
             guidance.append(
-                "Keep the bottom footer zone clean, low-noise, and high-contrast enough for a small exact compliance footer overlay without overpowering the composition."
+                "Keep the bottom strip clean, low-noise, and high-contrast enough for a small exact compliance overlay without overpowering the composition."
             )
         else:
             guidance.append("Do not invent a legal footer, disclaimer paragraph, or CTA copy beyond the approved text below.")
@@ -19025,13 +19105,7 @@ class AIOrchestratorService:
         )
         sections = [
             "Create one finished premium branded social creative.",
-            *AIOrchestratorService._logo_non_generation_contract(
-                brand_name=brand_name,
-                reserved_logo_area=reserved_logo_area,
-            ),
-            f"The {reserved_logo_area} area is strictly reserved for the brand logo asset. Do not place any headline, body copy, supporting text, proof point, CTA, icon, or visual element inside or immediately adjacent to this corner.",
-            logo_safe_zone_guidance,
-            logo_surface_guidance,
+            f"Keep the {reserved_logo_area} area completely empty and visually clean. Do not place any headline, body copy, supporting text, proof point, CTA, icon, or visual element inside or immediately adjacent to this corner.",
             disclaimer_overlay_guidance,
             f"Platform: {platform}.",
             f"Format: {format_name}.",
@@ -19094,7 +19168,7 @@ class AIOrchestratorService:
             f"Reference images available for composition: {reference_summary}.",
             "Current request subject matter overrides reference subject matter: preserve only approved palette, spacing, layout rhythm, and visual craft from references; never import unrelated objects, industries, products, or scenes from a template.",
             "Render a cohesive, modern, client-ready finished visual with clean hierarchy, premium spacing, and a clear focal path.",
-            "Do not crop or crowd any reserved text, CTA, logo, or legal-safe region. If space feels tight, simplify the visual substrate instead of pushing zones to the edge.",
+            "Do not crop or crowd any reserved text, CTA, corner-safe, or legal-safe region. If space feels tight, simplify the visual substrate instead of pushing zones to the edge.",
             "All reserved overlay regions must remain fully inside the export frame; do not let cards, shells, dividers, or image subjects touch or cross the crop boundary.",
             "Avoid defaulting to a plain text poster when the requested format calls for a richer explanatory layout.",
             "Make the supporting visual explain the exact topic and benefit from the approved copy intent and user prompt, while leaving all words for backend overlay.",
@@ -19135,12 +19209,14 @@ class AIOrchestratorService:
             "Use one coherent composition, not a collage of unrelated stickers, icons, or panels.",
             "Keep every future text-overlay surface clean, calm, high-contrast, and intentionally aligned with premium editorial spacing.",
             "Avoid generic clip-art, fake logos, placeholder UI, awkward overlaps, washed-out buttons, repeated poster templates, or low-contrast pale text on pale backgrounds.",
+            "CRITICAL TEXT WRAPPING RULE: You must aggressively wrap the headline and body text so they stay strictly inside their designated coordinate zones. Never let any letters or words stretch into the 'empty space' corner. Keep the 'empty space' 100% blank and free of text so the backend overlay does not clash with your lettering.",
         ]
         prompt = AIOrchestratorService._trim_prompt(
             " ".join(section for section in sections if section and not section.endswith(": .")),
             AIOrchestratorService.IMAGE_PROMPT_MAX_LENGTH,
         )
-        return AIOrchestratorService._strip_blocked_compliance_phrases(prompt)
+        prompt = AIOrchestratorService._strip_blocked_compliance_phrases(prompt)
+        return AIOrchestratorService._scrub_image_prompt_brand_mark_triggers(prompt)
 
     @classmethod
     def _collapse_carousel_segments(cls, segments: list[str], max_slides: int) -> list[str]:
@@ -21269,7 +21345,7 @@ class AIOrchestratorService:
             composition_mode = "decision_support_surface"
             pacing_target = "Resolve the sequence with a calmer decision-support or product-context surface that clearly feels like a closing beat."
             layout_balance_target = "Keep the closing slide cleaner and more resolved than the middle slides, with explicit CTA-safe space and a calmer 50/50 composition."
-            whitespace_target = "Reserve guarded whitespace around the CTA-safe and logo-safe regions so the close feels intentional and premium."
+            whitespace_target = "Reserve guarded whitespace around the CTA-safe and corner-safe regions so the close feels intentional and premium."
         else:
             if text_pressure == "dense":
                 visual_weight = "modular_explainer"
@@ -22217,6 +22293,8 @@ class AIOrchestratorService:
             if template_surface_policy == "style_reference_only" and sample_metadata_contaminated
             else AIOrchestratorService._compact_layout_dna_contract(compiled_context)
         )
+        if layout_dna_contract:
+            layout_dna_contract = AIOrchestratorService._scrub_image_prompt_brand_mark_triggers(layout_dna_contract)
         logo_position_hint = AIOrchestratorService._effective_logo_position_hint(
             request=request,
             creative_decision=creative_decision,
@@ -22336,12 +22414,16 @@ class AIOrchestratorService:
             compiled_context=compiled_context,
             scene_graph=scene_graph,
         )
+        if strict_sample_layout_contract:
+            strict_sample_layout_contract = AIOrchestratorService._scrub_image_prompt_brand_mark_triggers(strict_sample_layout_contract)
         thin_sample_conditioning_contract = AIOrchestratorService._thin_sample_conditioning_contract(
             slide=slide,
             request=request,
             creative_decision=creative_decision,
             scene_graph=scene_graph,
         )
+        if thin_sample_conditioning_contract:
+            thin_sample_conditioning_contract = AIOrchestratorService._scrub_image_prompt_brand_mark_triggers(thin_sample_conditioning_contract)
         visual_plan_guidance = AIOrchestratorService._visual_explanation_guidance(visual_plan)
         disclaimer_overlay_guidance = AIOrchestratorService._disclaimer_overlay_guidance(request)
         legal_footer_text = AIOrchestratorService._scene_graph_legal_footer_text(scene_graph)
@@ -22765,8 +22847,8 @@ class AIOrchestratorService:
             else ""
         )
         sample_logo_exclusion_contract = (
-            "SAMPLE LOGO EXCEPTION: when following the selected sample page, copy only the empty logo-safe zone geometry and surrounding whitespace. "
-            "Do not copy the sample page's logo artwork, wordmark, brand name, logo colors, logo symbol cluster, or any top-corner brand mark; that area must stay blank because the exact stored logo is overlaid after generation."
+            "SAMPLE CORNER EXCEPTION: when following the selected sample page, copy only the empty corner reserved zone geometry and surrounding whitespace. "
+            "Do not copy the sample page's corner artwork, wordmark, brand name, symbol cluster, or any top-corner brand mark; that area must stay blank because the exact stored asset is overlaid after generation."
             if style_reference_sample_active
             else ""
         )
@@ -22799,16 +22881,9 @@ class AIOrchestratorService:
             sample_primary_render_contract,
             sample_module_execution_contract,
             sample_logo_exclusion_contract,
-            f"Brand context only: {brand_name}. Use this for palette, tone, and approved copy context only, never as a logo, masthead, signature, watermark, or standalone brand mark.",
-            f"LOGO RULE — no exceptions: the AI base creative must contain zero logos, wordmarks, brand-name signatures, monograms, watermarks, logo-like shapes, or brand marks anywhere in the slide image. Do not render, invent, stylize, or hint at any logo, initials, or brand identity element. The exact stored brand logo is applied as a separate asset after generation.",
-            *AIOrchestratorService._logo_non_generation_contract(
-                brand_name=brand_name,
-                reserved_logo_area=reserved_logo_area,
-            ),
-            "Do not typeset the brand name as a top-corner signature.",
-            f"The {reserved_logo_area} area is strictly reserved for the brand logo. Do not place any headline, body copy, supporting text, proof point, CTA, icon, or visual element inside or immediately adjacent to this corner.",
-            logo_safe_zone_guidance,
-            logo_surface_guidance,
+            "Brand visual constraints: Use the approved color palette and styling, but never write the brand name or place any standalone graphic or signature mark anywhere in the canvas.",
+            "Never typeset the brand name in the corners.",
+            f"Keep the {reserved_logo_area} area completely empty and visually clean. Do not place any headline, body copy, supporting text, proof point, CTA, icon, or visual element inside or immediately adjacent to this corner.",
             disclaimer_overlay_guidance,
             f"Platform: {platform}.",
             f"Output type: {file_type}.",
@@ -22891,7 +22966,7 @@ class AIOrchestratorService:
                 )
                 if AIOrchestratorService._normalize_metadata_text(slide.get("cta"), limit=80)
                 else (
-                    "Do not add a CTA button on this slide; preserve only a thin quiet legal-footer-safe strip at the bottom."
+                    "Do not add a CTA button on this slide; preserve only a thin quiet blank bottom strip for post-processing compliance text."
                     if legal_footer_text
                     else "Do not add a CTA button or footer treatment on this slide."
                 )
@@ -22921,7 +22996,7 @@ class AIOrchestratorService:
             palette_execution_contract,
             f"Typography direction: {typography}.",
             (
-                "Brand-system priority for this style-reference slide: use brand palette, typography, and logo-safe behavior as guardrails, but let the selected sample page control layout, image slots, module count, spacing, and visual subject category."
+                "Brand-system priority for this style-reference slide: use brand palette, typography, and corner-safe behavior as guardrails, but let the selected sample page control layout, image slots, module count, spacing, and visual subject category."
                 if style_reference_sample_active
                 else ""
             ),
@@ -22961,7 +23036,7 @@ class AIOrchestratorService:
                 if use_backend_text_overlay
                 else "Use one clean composition with slide-safe spacing, strong focal emphasis, and integrated readable copy that feels native to the design rather than overlaid afterward."
             ),
-            "Do not crop or crowd any reserved text, CTA, logo, or legal-safe region. If space is tight, simplify the visual substrate instead of pushing zones to the edge.",
+            "Do not crop or crowd any reserved text, CTA, corner-safe, or legal-safe region. If space is tight, simplify the visual substrate instead of pushing zones to the edge.",
             "All reserved slide text and CTA surfaces must remain fully inside the export frame; do not let bottom shells, cards, dividers, or image subjects touch or cross the crop boundary.",
             "For square or portrait carousel exports, do not let bottom buttons, bullets, or lower text touch or cross the crop boundary.",
             (
@@ -23005,6 +23080,7 @@ class AIOrchestratorService:
                 if use_backend_text_overlay
                 else "Render only the approved readable copy once. Do not add duplicate shadow headlines, floating labels, pseudo-text, decorative lettering, or any extra wording outside the approved text-safe regions."
             ),
+            "CRITICAL TEXT WRAPPING RULE: You must aggressively wrap the headline and body text so they stay strictly inside their designated coordinate zones. Never let any letters or words stretch into the 'empty space' corner. Keep the 'empty space' 100% blank and free of text so the backend overlay does not clash with your lettering.",
             AIOrchestratorService._normalize_metadata_text(retry_note, limit=220),
         ]
         optional_prefixes = (
@@ -23058,11 +23134,12 @@ class AIOrchestratorService:
                 continue
             target = optional_sections if cleaned.startswith(optional_prefixes) else required_sections
             target.append(cleaned)
-        return AIOrchestratorService._compose_prompt_sections(
+        prompt = AIOrchestratorService._compose_prompt_sections(
             required_sections=required_sections,
             optional_sections=optional_sections,
             limit=AIOrchestratorService.CAROUSEL_IMAGE_PROMPT_MAX_LENGTH,
         )
+        return AIOrchestratorService._scrub_image_prompt_brand_mark_triggers(prompt)
 
     @staticmethod
     def build_logo_composite_prompt(
@@ -23083,24 +23160,26 @@ class AIOrchestratorService:
             if selected_logo_variant
             else ""
         )
-        return AIOrchestratorService._trim_prompt(
+        prompt = AIOrchestratorService._trim_prompt(
             " ".join(
                 [
-                    "Edit the first input image by compositing the exact logo from the second input image into the masked region only.",
+                    "Edit the first input image by compositing the exact brand mark from the second input image into the masked region only.",
                     f"Platform: {platform}.",
                     f"Format: {format_name}.",
                     f"Headline context: {headline}.",
                     f"Supporting copy context: {supporting_line}.",
                     variant_guidance,
-                    "Use the second image exactly as the brand logo reference.",
-                    "Preserve the logo wording, colors, shape, and aspect ratio with high fidelity.",
-                    "Place the logo cleanly inside the masked area with professional spacing and no distortion.",
+                    "Use the second image exactly as the brand mark reference.",
+                    "Preserve the mark wording, colors, shape, and aspect ratio with high fidelity.",
+                    "Place the mark cleanly inside the masked area with professional spacing and no distortion.",
                     "Do not change any other part of the base creative outside the masked region.",
-                    "Do not invent a new logo, do not stylize the logo, and do not add any extra text.",
+                    "Do not invent a new mark, do not stylize it, and do not add any extra text.",
                 ]
             ),
             AIOrchestratorService.IMAGE_PROMPT_MAX_LENGTH,
         )
+        prompt = re.sub(r"(?i)(?<![a-zA-Z])logo(s)?(?![a-zA-Z])", "brand mark", prompt)
+        return re.sub(r"(?i)corner_safe_zone", "brand mark", prompt)
 
     @staticmethod
     def build_image_prompt(
@@ -23335,14 +23414,7 @@ class AIOrchestratorService:
 
         sections = [
             "Create a clean supporting visual aligned to the brand system.",
-            *AIOrchestratorService._logo_non_generation_contract(
-                brand_name=request.resolved_brand_context.get("brand_name") if isinstance(request.resolved_brand_context, dict) else "",
-                reserved_logo_area=reserved_logo_area,
-            ),
-            f"LOGO RULE — no exceptions: do not render, invent, stylize, or hint at any logo, wordmark, monogram, brand mark, initials, or branded signature anywhere in the generated image. The exact stored brand logo is applied as a separate overlay after generation — never recreate it.",
-            f"The {reserved_logo_area} area is strictly reserved for the brand logo. Do not place any icon, illustration element, text, or visual detail inside or immediately adjacent to this corner.",
-            logo_safe_zone_guidance,
-            logo_surface_guidance,
+            f"Keep the {reserved_logo_area} area completely empty and visually clean. Do not place any icon, illustration element, text, or visual detail inside or immediately adjacent to this corner.",
             f"Theme: {theme_anchor}.",
             f"Message strategy theme: {message_theme}.",
             f"Core audience message: {audience_message}.",
@@ -23487,7 +23559,8 @@ class AIOrchestratorService:
         ]
         prompt = " ".join(section for section in sections if section and not section.endswith(": ."))
         prompt = AIOrchestratorService._trim_prompt(prompt, AIOrchestratorService.IMAGE_PROMPT_MAX_LENGTH)
-        return AIOrchestratorService._strip_blocked_compliance_phrases(prompt)
+        prompt = AIOrchestratorService._strip_blocked_compliance_phrases(prompt)
+        return AIOrchestratorService._scrub_image_prompt_brand_mark_triggers(prompt)
 
     @staticmethod
     def _compact_named_items(value: Any, limit: int) -> str:
@@ -23625,7 +23698,7 @@ class AIOrchestratorService:
                 f"Use {accent} selectively for " + ", ".join(accent_targets) + " instead of spreading it across the whole slide."
             )
         if has_legal_footer and primary:
-            instructions.append(f"Keep the legal footer readable with a calm, low-noise strip and text that can sit cleanly in or near {primary}.")
+            instructions.append(f"Keep the bottom compliance strip calm, blank, and low-noise so exact post-processing text can sit cleanly in or near {primary}.")
         return " ".join(instructions)
 
     @staticmethod
@@ -23678,11 +23751,9 @@ class AIOrchestratorService:
         typography = visual_identity.get("typography") or visual_identity.get("typography_guide") or {}
         if isinstance(typography, dict):
             families = typography.get("font_families") or typography.get("font_family") or typography.get("families")
-            hierarchy = typography.get("hierarchy") or typography.get("usage_patterns")
             family_text = AIOrchestratorService._compact_named_items(families, limit=3)
-            hierarchy_text = AIOrchestratorService._compact_named_items(hierarchy, limit=3)
-            if family_text != "None" or hierarchy_text != "None":
-                return f"{family_text}; hierarchy: {hierarchy_text}"
+            if family_text != "None":
+                return family_text
         return "Follow the validated brand typography."
 
     @staticmethod
@@ -23731,7 +23802,10 @@ class AIOrchestratorService:
             channel = AIOrchestratorService._normalize_metadata_text(item.get("channel"), limit=32).lower()
             content = AIOrchestratorService._normalize_metadata_text(item.get("content"), limit=180)
             if channel and content:
-                grounded_items.append(f"{channel}: {content}")
+                # Prevent RAG snippets from injecting brand-asset trigger words into the image prompt.
+                content_safe = AIOrchestratorService._scrub_image_prompt_brand_mark_triggers(content, replacement="reserved space")
+                channel_safe = AIOrchestratorService._scrub_image_prompt_brand_mark_triggers(channel, replacement="reserved space")
+                grounded_items.append(f"{channel_safe}: {content_safe}")
         return " | ".join(grounded_items)
 
     @staticmethod

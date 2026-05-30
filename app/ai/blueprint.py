@@ -114,7 +114,7 @@ class BlueprintService:
             ]
         else:
             image_height = max(280, int(height * 0.34))
-            headline_top = pad_y
+            headline_top = pad_y + logo_height + 12
             body_top = headline_top + headline_height + 12
             image_top = body_top + max(140, int(height * 0.2)) + 12
             default_zones = [
